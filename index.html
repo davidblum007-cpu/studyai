@@ -556,12 +556,26 @@
             <button class="fc-rate-btn fc-rate-easy" id="btnRateEasy">🟢 Perfekt</button>
           </div>
 
-          <!-- Navigation -->
+          <!-- Navigation + Edit -->
           <div class="fc-nav">
             <button class="fc-nav-btn" id="btnFcPrev">←</button>
             <span class="fc-nav-count" id="fcNavCount">1 / 0</span>
             <button class="fc-nav-btn" id="btnFcNext">→</button>
           </div>
+
+          <!-- Karten-Aktionen: Bearbeiten -->
+          <div class="fc-card-actions">
+            <button class="fc-action-btn" id="fcEditBtn" title="Karte bearbeiten (E)">
+              ✏️ Bearbeiten
+            </button>
+          </div>
+        </div>
+
+        <!-- Karten hinzufügen -->
+        <div class="fc-add-row">
+          <button class="btn-ghost fc-add-btn" id="btnAddFlashcard" title="Neue Flashcard manuell hinzufügen">
+            ➕ Karte hinzufügen
+          </button>
         </div>
 
         <!-- Karten-Galerie (alle Karten als Grid) -->
@@ -649,7 +663,15 @@
       <div class="sr-tabs" id="srTabs">
         <button class="sr-tab active" data-tab="dashboard">📊 Dashboard</button>
         <button class="sr-tab" data-tab="weaknesses">📉 Schwächen</button>
+        <button class="sr-tab" id="tabAnalytics">📈 Statistiken</button>
       </div>
+
+      <!-- Analytics-Tab -->
+      <div id="analyticsSection" class="sr-tab-content hidden">
+        <!-- wird von renderAnalytics() befüllt -->
+        <p class="analytics-empty">Klicke auf "Statistiken" um deine Lernfortschritte zu sehen.</p>
+      </div>
+
       <!-- Schwächen-Tab -->
       <div id="srWeaknessTab" class="hidden">
         <div id="weaknessList" class="weakness-list"></div>
