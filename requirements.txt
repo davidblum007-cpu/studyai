@@ -28,3 +28,15 @@ firebase-admin>=6.0.0
 # ── Stripe Billing (Phase 2, optional bis Monetarisierung aktiv) ──────────────
 # Benötigt für: /api/billing/checkout, /api/billing/portal, /api/webhooks/stripe
 stripe>=8.0.0
+
+# ── Produktions-Server (Phase 3) ──────────────────────────────────────────────
+# gunicorn.conf.py nutzt gthread-Worker-Class für SSE-Streaming-Kompatibilität.
+# Nur für Linux/macOS nötig – auf Windows: python server.py für Entwicklung.
+gunicorn>=22.0.0
+
+# ── Redis (Phase 3 – Rate-Limiting + optionales Caching) ─────────────────────
+redis>=5.0.0
+
+# ── Sentry Error-Tracking (Phase 3, optional) ─────────────────────────────────
+# Aktivieren: SENTRY_DSN=https://xxx@sentry.io/yyy in .env setzen
+sentry-sdk[flask]>=2.0.0

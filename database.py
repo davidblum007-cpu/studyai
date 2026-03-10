@@ -260,6 +260,69 @@ class Database:
         ).fetchall()
         return [json.loads(r["data"]) for r in rows]
 
+    def get_flashcard(self, session_id: str, card_id: str) -> Optional[dict]:
+        """Gibt eine einzelne Flashcard zurück, oder None wenn nicht gefunden."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT data FROM flashcards WHERE id = ? AND session_id = ?",
+            (card_id, session_id)
+        ).fetchone()
+        return json.loads(row["data"]) if row else None
+
+    def add_flashcard(self, session_id: str, data: dict) -> str:
+        """
+        Fügt eine neue Flashcard zu einer Session hinzu.
+        Gibt die neue card_id zurück.
+        Wenn data kein 'id' enthält, wird automatisch eine generiert.
+        """
+        card_id = str(data.get("id", str(uuid.uuid4())[:8]))
+        data = dict(data)
+        data["id"] = card_id
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO flashcards (id, session_id, data) VALUES (?, ?, ?)",
+            (card_id, session_id, json.dumps(data, ensure_ascii=False))
+        )
+        conn.commit()
+        self.touch_session(session_id)
+        logger.info("[Database] Flashcard hinzugefügt: %s in Session %s", card_id, session_id)
+        return card_id
+
+    def update_flashcard(self, session_id: str, card_id: str, data: dict):
+        """
+        Aktualisiert die Daten einer einzelnen Flashcard.
+        Merged die neuen Felder mit den vorhandenen (Partial-Update).
+        """
+        existing = self.get_flashcard(session_id, card_id)
+        if existing is None:
+            raise ValueError(f"Flashcard {card_id} nicht in Session {session_id} gefunden")
+        merged = {**existing, **data, "id": card_id}   # id kann nicht überschrieben werden
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE flashcards SET data = ? WHERE id = ? AND session_id = ?",
+            (json.dumps(merged, ensure_ascii=False), card_id, session_id)
+        )
+        conn.commit()
+        self.touch_session(session_id)
+        logger.info("[Database] Flashcard aktualisiert: %s in Session %s", card_id, session_id)
+
+    def delete_flashcard(self, session_id: str, card_id: str):
+        """
+        Löscht eine Flashcard und ihren SR-State.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            "DELETE FROM flashcards WHERE id = ? AND session_id = ?",
+            (card_id, session_id)
+        )
+        conn.execute(
+            "DELETE FROM sr_states WHERE card_id = ? AND session_id = ?",
+            (card_id, session_id)
+        )
+        conn.commit()
+        self.touch_session(session_id)
+        logger.info("[Database] Flashcard gelöscht: %s aus Session %s", card_id, session_id)
+
     # ── Lernplan ──────────────────────────────────────────────────────────────
 
     def save_plan(self, session_id: str, data: dict):

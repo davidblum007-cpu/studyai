@@ -34,6 +34,17 @@ Endpoints:
   POST   /api/user/delete              → GDPR Art. 17: Account + Daten löschen
   POST   /api/user/export              → GDPR Art. 20: Alle Daten als ZIP exportieren
 
+  POST   /api/sessions/<id>/flashcards           → Flashcard hinzufügen (Phase 4)
+  GET    /api/sessions/<id>/flashcards/<card_id> → Einzelne Flashcard abrufen
+  PATCH  /api/sessions/<id>/flashcards/<card_id> → Flashcard bearbeiten
+  DELETE /api/sessions/<id>/flashcards/<card_id> → Flashcard löschen
+
+  GET    /api/billing/usage            → Aktueller Verbrauch + Limits
+  GET    /api/user/profile             → User-Profil (Tier + Usage)
+  POST   /api/billing/checkout         → Stripe Checkout starten
+  POST   /api/billing/portal           → Stripe Abo-Verwaltung
+  POST   /api/webhooks/stripe          → Stripe Webhook
+
   GET    /privacy.html                 → Datenschutzerklärung
   GET    /terms.html                   → Nutzungsbedingungen
 """
@@ -48,7 +59,32 @@ import threading
 import time
 import re
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
+
+# ── Sentry Error-Tracking (optional – deaktiviert wenn SENTRY_DSN fehlt) ─────
+_sentry_dsn = os.getenv("SENTRY_DSN", "").strip()
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.flask import FlaskIntegration
+        from sentry_sdk.integrations.logging import LoggingIntegration
+
+        sentry_sdk.init(
+            dsn=_sentry_dsn,
+            integrations=[
+                FlaskIntegration(transaction_style="url"),
+                LoggingIntegration(level=logging.WARNING, event_level=logging.ERROR),
+            ],
+            traces_sample_rate=float(os.getenv("SENTRY_TRACES_RATE", "0.05")),
+            environment=os.getenv("FLASK_ENV", "development"),
+            release=os.getenv("APP_VERSION", "1.0.0"),
+            send_default_pii=False,   # GDPR: keine PII an Sentry senden
+        )
+        print("[Sentry] Initialized – environment:", os.getenv("FLASK_ENV", "development"))
+    except ImportError:
+        print("[Sentry] sentry-sdk nicht installiert – Error-Tracking deaktiviert.")
+        print("         Installieren: pip install sentry-sdk[flask]")
 
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context
 from flask_cors import CORS
@@ -290,12 +326,56 @@ def terms():
 
 @app.route("/api/health")
 def health():
-    """Health-Check-Endpoint."""
-    return jsonify({
+    """
+    Erweiterter Health-Check-Endpoint.
+    Prüft: Datenbank, Redis (optional), Claude-API-Key, Firebase.
+    Gibt HTTP 200 bei "ok", HTTP 503 bei "degraded" zurück.
+    """
+    checks: dict = {
         "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": os.getenv("APP_VERSION", "1.0.0"),
         "model": os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
-        **firebase.status(),
-    })
+    }
+
+    # ── Datenbank-Check ──────────────────────────────────────────────────────
+    try:
+        db._get_conn().execute("SELECT 1")
+        checks["db"] = "ok"
+    except Exception as exc:
+        checks["db"] = f"error: {exc}"
+        checks["status"] = "degraded"
+
+    # ── Redis-Check (optional) ───────────────────────────────────────────────
+    redis_url = os.getenv("REDIS_URL", "").strip()
+    if redis_url:
+        try:
+            import redis as _redis_lib
+            _r = _redis_lib.from_url(redis_url, socket_timeout=2)
+            _r.ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = f"unavailable: {exc}"
+            # Redis-Ausfall ist kein fataler Fehler (degraded, aber nicht down)
+    else:
+        checks["redis"] = "not_configured"
+
+    # ── Claude API Key ───────────────────────────────────────────────────────
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if api_key.startswith("sk-ant-"):
+        checks["claude"] = "configured"
+    elif api_key:
+        checks["claude"] = "invalid_format"
+        checks["status"] = "degraded"
+    else:
+        checks["claude"] = "missing"
+        checks["status"] = "degraded"
+
+    # ── Firebase-Check ───────────────────────────────────────────────────────
+    checks.update(firebase.status())
+
+    http_status = 200 if checks["status"] == "ok" else 503
+    return jsonify(checks), http_status
 
 
 @app.route("/api/config")
@@ -1060,6 +1140,125 @@ def stripe_webhook():
     except Exception as e:
         logger.exception("[Billing] Webhook-Fehler")
         return jsonify({"error": str(e)}), 500
+
+
+# ── Flashcard CRUD (Phase 4) ───────────────────────────────────────────────────
+
+# Erlaubte Felder für Flashcard-Update (Whitelist)
+_FLASHCARD_ALLOWED_FIELDS = {"front", "back", "type", "difficulty", "topic", "diagram", "hint"}
+
+
+@app.route("/api/sessions/<session_id>/flashcards", methods=["POST"])
+@limiter.limit("30 per minute")
+def add_flashcard(session_id):
+    """
+    Fügt eine neue Flashcard zu einer Session hinzu.
+    Body: {card: {front: str, back: str, type?: str, topic?: str, ...}}
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Zugriff verweigert"}), 403
+    data = request.get_json(force=True, silent=True) or {}
+    card = data.get("card", {})
+    if not isinstance(card, dict):
+        return jsonify({"error": "card muss ein Objekt sein"}), 400
+    front = str(card.get("front", "")).strip()
+    back  = str(card.get("back",  "")).strip()
+    if not front or not back:
+        return jsonify({"error": "front und back sind Pflichtfelder"}), 400
+    # Sanitize: nur erlaubte Felder, max. Längen aus config
+    from config import MAX_FLASHCARD_FRONT_LENGTH, MAX_FLASHCARD_BACK_LENGTH
+    safe_card: dict = {
+        "front":      front[:MAX_FLASHCARD_FRONT_LENGTH],
+        "back":       back[:MAX_FLASHCARD_BACK_LENGTH],
+        "type":       str(card.get("type", "basic"))[:50],
+        "difficulty": str(card.get("difficulty", "medium"))[:20],
+        "topic":      str(card.get("topic", ""))[:200],
+    }
+    if card.get("hint"):
+        safe_card["hint"] = str(card["hint"])[:500]
+    try:
+        card_id = db.add_flashcard(session_id, safe_card)
+        return jsonify({"success": True, "card_id": card_id})
+    except Exception as e:
+        logger.exception("[Flashcard] Fehler beim Hinzufügen")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["PATCH"])
+@limiter.limit("60 per minute")
+def update_flashcard(session_id, card_id):
+    """
+    Aktualisiert eine bestehende Flashcard (Partial-Update).
+    Body: {card: {front?: str, back?: str, type?: str, topic?: str, ...}}
+    Nur Felder die im Body enthalten sind, werden geändert.
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Zugriff verweigert"}), 403
+    if len(card_id) > 64:
+        return jsonify({"error": "Ungültige card_id"}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    card = data.get("card", {})
+    if not isinstance(card, dict):
+        return jsonify({"error": "card muss ein Objekt sein"}), 400
+    # Nur erlaubte Felder übernehmen
+    from config import MAX_FLASHCARD_FRONT_LENGTH, MAX_FLASHCARD_BACK_LENGTH, MAX_FLASHCARD_DIAGRAM_LENGTH
+    safe_update: dict = {}
+    if "front"      in card: safe_update["front"]      = str(card["front"])[:MAX_FLASHCARD_FRONT_LENGTH]
+    if "back"       in card: safe_update["back"]        = str(card["back"])[:MAX_FLASHCARD_BACK_LENGTH]
+    if "type"       in card: safe_update["type"]        = str(card["type"])[:50]
+    if "difficulty" in card: safe_update["difficulty"]  = str(card["difficulty"])[:20]
+    if "topic"      in card: safe_update["topic"]       = str(card["topic"])[:200]
+    if "hint"       in card: safe_update["hint"]        = str(card["hint"])[:500]
+    if "diagram"    in card: safe_update["diagram"]     = str(card["diagram"])[:MAX_FLASHCARD_DIAGRAM_LENGTH]
+    if not safe_update:
+        return jsonify({"error": "Keine gültigen Felder zum Aktualisieren"}), 400
+    try:
+        db.update_flashcard(session_id, card_id, safe_update)
+        return jsonify({"success": True})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.exception("[Flashcard] Fehler beim Aktualisieren")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["DELETE"])
+@limiter.limit("60 per minute")
+def delete_flashcard(session_id, card_id):
+    """Löscht eine Flashcard und ihren SR-State."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Zugriff verweigert"}), 403
+    if len(card_id) > 64:
+        return jsonify({"error": "Ungültige card_id"}), 400
+    try:
+        db.delete_flashcard(session_id, card_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.exception("[Flashcard] Fehler beim Löschen")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["GET"])
+def get_flashcard(session_id, card_id):
+    """Gibt eine einzelne Flashcard zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Zugriff verweigert"}), 403
+    card = db.get_flashcard(session_id, card_id)
+    if card is None:
+        return jsonify({"error": "Flashcard nicht gefunden"}), 404
+    return jsonify({"card": card})
 
 
 # ── Quiz ──────────────────────────────────────────────────────────────────────
