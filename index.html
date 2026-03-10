@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StudyAI – Intelligente Skript-Analyse</title>
+  <meta name="description"
+    content="KI-gestützte Analyse von Vorlesungsskripten. Lade ein PDF hoch und erhalte sofort Fachbegriffe, Schwierigkeitsgrade und präzise Zusammenfassungen." />
+
+  <!-- ── PWA ────────────────────────────────────────────────────────────────── -->
+  <link rel="manifest" href="/manifest.json" />
+  <meta name="theme-color" content="#7c3aed" />
+  <!-- iOS Support -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="StudyAI" />
+  <link rel="apple-touch-icon" href="/icons/icon.svg" />
+  <!-- Windows Tile -->
+  <meta name="msapplication-TileColor" content="#7c3aed" />
+  <meta name="msapplication-TileImage" content="/icons/icon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+
+<body>
+
+  <!-- ── Hintergrund ──────────────────────────────────────────── -->
+  <div class="bg-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <!-- ── Navigation ───────────────────────────────────────────── -->
+  <nav class="navbar">
+    <div class="nav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">StudyAI</span>
+      <span class="brand-badge">Phase 1 + 2</span>
+    </div>
+    <div class="nav-right">
+      <div class="nav-status" id="navStatus">
+        <span class="status-dot"></span>
+        <span id="navStatusText">Bereit</span>
+      </div>
+      <!-- User-Menü (sichtbar wenn eingeloggt) -->
+      <div id="userMenu" class="user-menu hidden">
+        <button class="user-menu-btn" id="userMenuBtn" aria-expanded="false">
+          <img id="userAvatar" class="user-avatar" src="" alt="Avatar" />
+          <span id="userDisplayName" class="user-name"></span>
+          <span class="user-menu-chevron">▾</span>
+        </button>
+        <div id="userMenuDropdown" class="user-menu-dropdown hidden">
+          <div class="user-menu-info">
+            <span id="userEmail" class="user-menu-email"></span>
+            <span id="userTierBadge" class="user-tier-badge tier-free">Free</span>
+          </div>
+
+          <!-- Usage-Meter -->
+          <div id="userUsageMeter" class="user-usage-meter">
+            <div class="usage-row">
+              <span class="usage-label">Analysen</span>
+              <span id="usageAnalyses" class="usage-count">0 / 3</span>
+            </div>
+            <div class="usage-bar-wrap">
+              <div class="usage-bar-fill" id="usageAnalysesFill" style="width:0%"></div>
+            </div>
+          </div>
+
+          <hr class="user-menu-divider" />
+
+          <!-- Upgrade-Button (nur für Free-User) -->
+          <button class="user-menu-item user-menu-upgrade hidden" id="btnUpgrade">
+            <span>⬆️</span> Upgrade auf Pro
+          </button>
+
+          <!-- Abo verwalten (nur für Pro-User) -->
+          <button class="user-menu-item hidden" id="btnManageBilling">
+            <span>💳</span> Abo verwalten
+          </button>
+
+          <!-- Daten exportieren (GDPR) -->
+          <button class="user-menu-item" id="btnExportData">
+            <span>📦</span> Daten exportieren
+          </button>
+
+          <!-- Account löschen (GDPR) -->
+          <button class="user-menu-item user-menu-danger" id="btnDeleteAccount">
+            <span>🗑️</span> Account löschen
+          </button>
+
+          <hr class="user-menu-divider" />
+          <button class="user-menu-item" id="btnSignOut">
+            <span>🚪</span> Abmelden
+          </button>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ── Hero ─────────────────────────────────────────────────── -->
+  <main class="main">
+
+  <!-- ── Session-Picker (erscheint beim Start wenn Sessions vorhanden) ───── -->
+  <section id="sessionPickerSection" class="session-picker-section hidden">
+    <div class="session-picker-card">
+      <div class="session-picker-header">
+        <span class="session-picker-icon">📚</span>
+        <div>
+          <h2 class="session-picker-title">Willkommen zurück!</h2>
+          <p class="session-picker-sub">Möchtest du eine frühere Session fortsetzen?</p>
+        </div>
+      </div>
+      <div id="sessionList" class="session-list"></div>
+      <div class="session-picker-actions">
+        <button id="btnNewSession" class="btn-new-session">+ Neue Session starten</button>
+        <label class="btn-import-session" title="Session aus JSON importieren">
+          ⬆️ Session importieren
+          <input type="file" id="sessionImportInput" accept=".json" class="hidden" />
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Toast Container ───────────────────────────────────────────────────── -->
+  <div id="toastContainer" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ── GDPR Cookie-Consent ─────────────────────────────────────────────────── -->
+  <div id="cookieConsent" class="cookie-banner" role="dialog" aria-modal="true"
+       aria-labelledby="cookieTitle" hidden>
+    <div class="cookie-content">
+      <p id="cookieTitle"><strong>🍪 Lokale Datenspeicherung</strong></p>
+      <p class="cookie-text">StudyAI speichert deine Lernfortschritte lokal (localStorage)
+        für Offline-Nutzung. Es werden keine Tracking-Cookies gesetzt.
+        <a href="/privacy.html" target="_blank" rel="noopener">Datenschutzerklärung</a>
+      </p>
+      <div class="cookie-actions">
+        <button id="cookieAccept" class="btn-cookie-accept">Akzeptieren</button>
+        <button id="cookieReject" class="btn-cookie-reject">Ablehnen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Auth-Overlay (wird verborgen wenn eingeloggt) ─────────────────────── -->
+  <div id="authOverlay" class="auth-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="auth-card">
+      <!-- Logo -->
+      <div class="auth-logo">
+        <img src="/icons/icon.svg" class="auth-logo-img" alt="StudyAI" />
+        <h1 class="auth-title">StudyAI</h1>
+        <p class="auth-subtitle">Melde dich an, um deine Lernfortschritte zu speichern</p>
+      </div>
+
+      <!-- Google Sign-In -->
+      <button id="btnSignInGoogle" class="btn-google-signin">
+        <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
+          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+        </svg>
+        Mit Google anmelden
+      </button>
+
+      <div class="auth-divider"><span>oder</span></div>
+
+      <!-- Email/Passwort -->
+      <form id="authEmailForm" class="auth-email-form" autocomplete="on">
+        <input type="email" id="authEmail" class="auth-input" placeholder="E-Mail" required autocomplete="email" />
+        <input type="password" id="authPassword" class="auth-input" placeholder="Passwort" required autocomplete="current-password" />
+        <div style="text-align: right; margin: -8px 0 12px;">
+          <a href="#" id="forgotPasswordLink" style="font-size: 13px; color: #6c8ebf; text-decoration: none;">Passwort vergessen?</a>
+        </div>
+        <div id="authError" class="auth-error hidden"></div>
+        <button type="submit" id="btnSignInEmail" class="btn-auth-submit">Anmelden</button>
+        <button type="button" id="btnRegisterEmail" class="btn-auth-secondary">Registrieren</button>
+      </form>
+
+      <!-- Offline / kein Firebase -->
+      <div class="auth-local-hint hidden" id="authLocalHint">
+        <p>Kein Firebase konfiguriert – App läuft im lokalen Modus.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Offline-Indicator ─────────────────────────────────────────────────── -->
+  <div id="offlineBanner" class="offline-banner hidden">
+    <span class="offline-icon">📴</span>
+    <span>Offline – Änderungen werden gespeichert sobald du wieder online bist</span>
+  </div>
+
+  <!-- ── PWA Install-Banner ────────────────────────────────────────────────── -->
+  <div id="installBanner" class="install-banner hidden">
+    <div class="install-banner-content">
+      <img src="/icons/icon.svg" class="install-banner-icon" alt="StudyAI Icon" />
+      <div class="install-banner-text">
+        <strong>StudyAI installieren</strong>
+        <span>Zur Homescreen hinzufügen – auch offline nutzbar</span>
+      </div>
+    </div>
+    <div class="install-banner-btns">
+      <button id="btnInstall" class="btn-install">Installieren</button>
+      <button id="btnInstallDismiss" class="btn-install-dismiss">✕</button>
+    </div>
+  </div>
+
+  <!-- ── SW Update-Banner ──────────────────────────────────────────────────── -->
+  <div id="updateBanner" class="update-banner hidden">
+    <span>🔄 Neue Version verfügbar</span>
+    <button id="btnUpdate" class="btn-update">Jetzt aktualisieren</button>
+  </div>
+
+  <!-- ── Keyboard Help Modal ───────────────────────────────────────────────── -->
+  <div id="kbdHelpModal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="kbdHelpTitle">
+    <div class="kbd-help-card">
+      <div class="kbd-help-title" id="kbdHelpTitle">
+        Tastaturkürzel
+        <button class="kbd-help-close" id="btnKbdHelpClose" aria-label="Schließen">✕</button>
+      </div>
+      <div class="kbd-help-section">
+        <div class="kbd-help-section-title">Allgemein</div>
+        <div class="kbd-help-row">
+          <span>Hilfe öffnen / schließen</span>
+          <div class="kbd-keys"><span class="kbd-key">?</span></div>
+        </div>
+        <div class="kbd-help-row">
+          <span>Modals schließen</span>
+          <div class="kbd-keys"><span class="kbd-key">Esc</span></div>
+        </div>
+      </div>
+      <div class="kbd-help-section">
+        <div class="kbd-help-section-title">Spaced Repetition</div>
+        <div class="kbd-help-row">
+          <span>Karte aufdecken</span>
+          <div class="kbd-keys"><span class="kbd-key">Leertaste</span> <span class="kbd-key">Enter</span></div>
+        </div>
+        <div class="kbd-help-row">
+          <span>Nochmal / Schwer / Gut / Einfach</span>
+          <div class="kbd-keys"><span class="kbd-key">1</span><span class="kbd-key">2</span><span class="kbd-key">3</span><span class="kbd-key">4</span></div>
+        </div>
+      </div>
+      <div class="kbd-help-section">
+        <div class="kbd-help-section-title">Quiz</div>
+        <div class="kbd-help-row">
+          <span>Option A / B / C / D wählen</span>
+          <div class="kbd-keys"><span class="kbd-key">1</span><span class="kbd-key">2</span><span class="kbd-key">3</span><span class="kbd-key">4</span></div>
+        </div>
+        <div class="kbd-help-row">
+          <span>Nächste Frage</span>
+          <div class="kbd-keys"><span class="kbd-key">Enter</span> <span class="kbd-key">Leertaste</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Rename Modal ──────────────────────────────────────────────────────── -->
+  <div id="renameModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="renameModalTitle">
+    <div class="modal-card">
+      <h3 class="modal-title" id="renameModalTitle">Session umbenennen</h3>
+      <input type="text" id="renameInput" class="modal-input" placeholder="Neuer Name…" maxlength="80" />
+      <div class="modal-actions">
+        <button id="btnRenameSave" class="btn-primary">Speichern</button>
+        <button id="btnRenameCancel" class="btn-ghost">Abbrechen</button>
+      </div>
+    </div>
+  </div>
+
+    <section class="hero">
+      <h1 class="hero-title">
+        Dein&nbsp;<span class="gradient-text">KI-Professor</span><br />
+        analysiert dein Skript
+      </h1>
+      <p class="hero-subtitle">
+        Lade ein Vorlesungsskript hoch. Claude claude-3-5-sonnet identifiziert Kernkonzepte,<br />
+        bewertet Schwierigkeit und erstellt prägnante Zusammenfassungen – Chunk für Chunk.
+      </p>
+
+      <!-- Agent-Pipeline-Visualisierung -->
+      <div class="pipeline-bar">
+        <div class="pipeline-step" id="step-security">
+          <div class="pipeline-icon">🛡️</div>
+          <span>Security</span>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-step" id="step-extraction">
+          <div class="pipeline-icon">📄</div>
+          <span>Extraktor</span>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-step" id="step-analysis">
+          <div class="pipeline-icon">🧠</div>
+          <span>Analyzer</span>
+        </div>
+        <div class="pipeline-arrow">→</div>
+        <div class="pipeline-step" id="step-finalizing">
+          <div class="pipeline-icon">✨</div>
+          <span>Ergebnisse</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Upload-Zone ──────────────────────────────────────────── -->
+    <section class="upload-section" id="uploadSection">
+      <div class="upload-card" id="dropZone">
+        <input type="file" id="fileInput" accept=".pdf" class="hidden" multiple />
+        <div class="upload-icon">📂</div>
+        <h2 class="upload-title">PDF hier ablegen</h2>
+        <p class="upload-subtitle">oder klicken zum Auswählen</p>
+        <p class="upload-hint">Max. 20 MB · Max. 200 Seiten · Nur textbasierte PDFs</p>
+        <button class="btn-upload" id="btnUpload">PDF auswählen</button>
+      </div>
+
+      <!-- Dateivorschau -->
+      <div class="file-preview hidden" id="filePreview">
+        <div class="file-icon">📋</div>
+        <div class="file-info">
+          <span class="file-name" id="fileName">–</span>
+          <span class="file-size" id="fileSize">–</span>
+        </div>
+        <button class="btn-remove" id="btnRemove" title="Entfernen">✕</button>
+        <div id="fileList" class="file-list hidden"></div>
+      </div>
+
+      <button class="btn-analyze" id="btnAnalyze" disabled>
+        <span class="btn-icon">🚀</span>
+        Analyse starten
+      </button>
+    </section>
+
+    <!-- ── Fortschrittsanzeige ──────────────────────────────────── -->
+    <section class="progress-section hidden" id="progressSection">
+      <div class="progress-card">
+        <div class="progress-header">
+          <span class="progress-title" id="progressTitle">Initialisiere…</span>
+          <span class="progress-pct" id="progressPct">0%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <p class="progress-msg" id="progressMsg">Bitte warte…</p>
+        <div class="progress-agents">
+          <span class="agent-chip active" id="agentSecurity">🛡️ Security</span>
+          <span class="agent-chip" id="agentExtraction">📄 Extraktor</span>
+          <span class="agent-chip" id="agentAnalysis">🧠 Analyzer</span>
+          <span class="agent-chip" id="agentFinalizing">✨ Finalisierung</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Metadaten ─────────────────────────────────────────────── -->
+    <section class="meta-section hidden" id="metaSection">
+      <div class="meta-grid" id="metaGrid">
+        <!-- via JS befüllt -->
+      </div>
+    </section>
+
+    <!-- ── Ergebnisse ────────────────────────────────────────────── -->
+    <section class="results-section hidden" id="resultsSection">
+      <div class="results-header">
+        <h2 class="results-title">Analyse-Ergebnisse</h2>
+        <div class="results-actions">
+          <button class="btn-ghost" id="btnToggleView">🗂️ Alle Themen</button>
+          <button class="btn-ghost" id="btnDownload">⬇️ JSON herunterladen</button>
+          <button class="btn-ghost" id="btnReset">↩️ Neu analysieren</button>
+        </div>
+      </div>
+
+      <!-- Themenübersicht -->
+      <div class="view hidden" id="viewThemes">
+        <div class="themes-grid" id="themesGrid"></div>
+      </div>
+
+      <!-- Chunk-Karten -->
+      <div class="view" id="viewChunks">
+        <div class="chunks-grid" id="chunksGrid"></div>
+      </div>
+    </section>
+
+    <!-- ── Fehler ────────────────────────────────────────────────── -->
+    <section class="error-section hidden" id="errorSection">
+      <div class="error-card">
+        <div class="error-icon">⚠️</div>
+        <h3>Fehler bei der Analyse</h3>
+        <p class="error-msg" id="errorMsg">–</p>
+        <button class="btn-analyze" id="btnErrorReset">Erneut versuchen</button>
+      </div>
+    </section>
+
+    <!-- ── Phase 2: Lernplan ──────────────────────────────── -->
+    <section class="plan-section hidden" id="planSection">
+      <!-- Divider -->
+      <div class="phase-divider">
+        <span class="phase-label">Phase 2 – Der Planer</span>
+      </div>
+
+      <!-- Steuerung -->
+      <div class="plan-controls-card">
+        <div class="plan-controls-header">
+          <div class="plan-controls-icon">📅</div>
+          <div>
+            <h2 class="plan-controls-title">Lernplan erstellen</h2>
+            <p class="plan-controls-sub">Claude verteilt die Themen gewichtet nach Schwierigkeit mit 2 Puffertagen vor
+              der Prüfung.</p>
+          </div>
+        </div>
+        <div class="plan-inputs">
+          <div class="plan-input-group">
+            <label class="plan-label" for="inputPruefungsdatum">🗓️ Prüfungsdatum</label>
+            <input type="date" id="inputPruefungsdatum" class="plan-date-input" />
+          </div>
+          <div class="plan-input-group">
+            <label class="plan-label" for="inputStunden">
+              ⏱️ Tägliche Lernzeit: <span id="stundenWert">3</span> Stunden
+            </label>
+            <input type="range" id="inputStunden" class="plan-slider" min="1" max="12" step="0.5" value="3" />
+            <div class="slider-ticks">
+              <span>1h</span><span>3h</span><span>6h</span><span>9h</span><span>12h</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn-plan" id="btnPlan" disabled>
+          <span class="btn-icon">🗓️</span>
+          Lernplan generieren
+        </button>
+      </div>
+
+      <!-- Ladeanimation -->
+      <div class="plan-loading hidden" id="planLoading">
+        <div class="plan-spinner"></div>
+        <p class="plan-loading-text">Claude erstellt deinen persönlichen Lernplan…</p>
+      </div>
+
+      <!-- Fehler beim Planen -->
+      <div class="plan-error hidden" id="planError">
+        <div class="error-card">
+          <div class="error-icon">⚠️</div>
+          <h3>Fehler beim Erstellen des Lernplans</h3>
+          <p class="error-msg" id="planErrorMsg">–</p>
+        </div>
+      </div>
+
+      <!-- Kalender-Ergebnis -->
+      <div class="plan-result hidden" id="planResult">
+        <div class="plan-result-header">
+          <div class="plan-stats" id="planStats"></div>
+          <button class="btn-ghost" id="btnDownloadPlan">⬇️ Lernplan herunterladen</button>
+        </div>
+        <div class="calendar-container" id="calendarContainer"></div>
+      </div>
+    </section>
+
+    <!-- ── Phase 3: Flashcard-Fabrik ───────────────────── -->
+    <section class="fc-section hidden" id="fcSection">
+
+      <!-- Phase-Divider -->
+      <div class="phase-divider">
+        <span class="phase-label">Phase 3 – Die Flashcard-Fabrik</span>
+      </div>
+
+      <!-- Trigger-Card -->
+      <div class="fc-trigger-card">
+        <div class="fc-trigger-header">
+          <div class="fc-trigger-icon">🧠</div>
+          <div>
+            <h2 class="fc-trigger-title">Flashcards werden automatisch generiert</h2>
+            <p class="fc-trigger-sub">Claude erstellt Anki-Karten für jedes Thema: Definitionen, Formeln, Konzepte &amp;
+              Ursache-Wirkung. Karten werden sofort nach der Analyse erzeugt.</p>
+          </div>
+        </div>
+        <button class="btn-fc-generate" id="btnFcGenerate">
+          <span class="btn-icon">🔄</span>
+          Neu generieren
+        </button>
+      </div>
+
+      <!-- SSE-Fortschritt -->
+      <div class="fc-progress hidden" id="fcProgress">
+        <div class="fc-progress-inner">
+          <div class="plan-spinner"></div>
+          <div>
+            <div class="fc-progress-title" id="fcProgressTitle">Generiere Karten…</div>
+            <div class="fc-progress-bar-wrap">
+              <div class="fc-progress-bar" id="fcProgressBar"></div>
+            </div>
+            <div class="fc-progress-msg" id="fcProgressMsg">Bitte warten…</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Ergebnis -->
+      <div class="fc-result hidden" id="fcResult">
+        <!-- Stats + Filter + Actions -->
+        <div class="fc-result-header">
+          <div class="fc-stats" id="fcStats"></div>
+          <div class="fc-actions">
+            <button class="btn-ghost" id="btnFcDownload">⬇️ Anki-Export</button>
+            <button class="btn-ghost" id="btnFcShuffle">🔀 Mischen</button>
+          </div>
+        </div>
+
+        <!-- Suchfeld -->
+        <div class="fc-search-wrap">
+          <span class="fc-search-icon">🔍</span>
+          <input type="text" id="fcSearchInput" class="fc-search-input" placeholder="Karten durchsuchen…" maxlength="120" autocomplete="off" />
+          <button class="fc-search-clear" id="fcSearchClear" title="Suche löschen">✕</button>
+        </div>
+
+        <!-- Typ-Filter -->
+        <div class="fc-filter-bar" id="fcFilterBar">
+          <button class="fc-filter-pill active" data-type="all">Alle</button>
+        </div>
+
+        <!-- Schwierigkeits-Tier-Filter -->
+        <div class="fc-filter-bar fc-tier-bar" id="fcTierBar" style="margin-top: 10px;">
+          <button class="fc-tier-pill active" data-tier="all">Alle Level</button>
+          <button class="fc-tier-pill" data-tier="Beginner">🌱 Beginner</button>
+          <button class="fc-tier-pill" data-tier="Intermediate">🚀 Intermediate</button>
+          <button class="fc-tier-pill" data-tier="Advanced">🧠 Advanced</button>
+        </div>
+
+        <!-- Deck-Viewport: einzelne Karte + Navigation -->
+        <div class="fc-deck" id="fcDeck">
+          <div class="fc-card-wrap">
+            <!-- 3D-Flip-Karte -->
+            <div class="fc-card" id="fcCard">
+              <div class="fc-card-inner" id="fcCardInner">
+                <div class="fc-card-front">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <div class="fc-card-typ" id="fcCardTyp" style="margin-bottom: 0;"></div>
+                    <div class="fc-card-tier" id="fcCardTier"
+                      style="font-size: 0.75rem; font-weight: 700; padding: 4px 10px; border-radius: 99px;"></div>
+                  </div>
+                  <div class="fc-card-question" id="fcCardFront"></div>
+                  <div class="fc-card-hint">Tippen zum Umdrehen 🔄</div>
+                </div>
+                <div class="fc-card-back">
+                  <div class="fc-card-answer" id="fcCardBack"></div>
+                  <div class="fc-card-diagram" id="fcCardDiagram" style="margin-top: 15px;"></div>
+                  <div class="fc-card-diff" id="fcCardDiff"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bewertungs-Buttons -->
+          <div class="fc-rating" id="fcRating">
+            <button class="fc-rate-btn fc-rate-hard" id="btnRateHard">🔴 Nochmal</button>
+            <button class="fc-rate-btn fc-rate-ok" id="btnRateOk">🟡 Gut</button>
+            <button class="fc-rate-btn fc-rate-easy" id="btnRateEasy">🟢 Perfekt</button>
+          </div>
+
+          <!-- Navigation -->
+          <div class="fc-nav">
+            <button class="fc-nav-btn" id="btnFcPrev">←</button>
+            <span class="fc-nav-count" id="fcNavCount">1 / 0</span>
+            <button class="fc-nav-btn" id="btnFcNext">→</button>
+          </div>
+        </div>
+
+        <!-- Karten-Galerie (alle Karten als Grid) -->
+        <div class="fc-gallery" id="fcGallery"></div>
+      </div>
+
+    </section>
+
+  <!-- ── Quiz-Modus ──────────────────────────────────────────────── -->
+  <section id="quizSection" class="quiz-section hidden">
+    <div class="phase-divider">
+      <span class="phase-label">🧠 Phase 5 – Quiz-Modus</span>
+    </div>
+    <div class="quiz-card">
+      <!-- Setup -->
+      <div id="quizSetup">
+        <div class="quiz-setup-header">
+          <span class="quiz-setup-icon">🎯</span>
+          <div>
+            <h3 class="quiz-setup-title">Active Recall Quiz</h3>
+            <p class="quiz-setup-sub">Teste dein Wissen mit Multiple-Choice-Fragen. Claude generiert 3 falsche + 1 richtige Antwort pro Karte.</p>
+          </div>
+        </div>
+        <div class="quiz-setup-btns">
+          <button id="btnQuizAll" class="btn-quiz-start">🧠 Alle Karten testen (20 Fragen)</button>
+          <button id="btnQuizWeak" class="btn-quiz-weak hidden">📉 Nur Schwächen testen</button>
+        </div>
+      </div>
+      <!-- Loading -->
+      <div id="quizLoading" class="quiz-loading hidden">
+        <div class="plan-spinner"></div>
+        <p class="quiz-loading-text">Claude generiert Antwortoptionen…</p>
+      </div>
+      <!-- Progress + Frage -->
+      <div id="quizProgressWrap" class="hidden">
+        <div class="quiz-prog-header">
+          <span id="quizProgressLabel" class="quiz-prog-label">Frage 1 von 20</span>
+          <span id="quizProgressPct" class="quiz-prog-pct">0%</span>
+        </div>
+        <div class="progress-track" style="margin-bottom:1.5rem">
+          <div id="quizProgressBar" class="progress-bar" style="width:0%"></div>
+        </div>
+        <!-- Frage -->
+        <div id="quizQuestion">
+          <div class="quiz-question-meta">
+            <span id="quizQuestionTyp" class="fc-card-typ">Konzept</span>
+          </div>
+          <p id="quizQuestionText" class="quiz-question-text"></p>
+          <div id="quizOptions" class="quiz-options"></div>
+          <button id="btnQuizNext" class="btn-quiz-next hidden">Weiter →</button>
+        </div>
+      </div>
+      <!-- Ergebnis -->
+      <div id="quizResult" class="quiz-result hidden">
+        <div class="quiz-score-ring">
+          <svg viewBox="0 0 120 120" class="quiz-score-svg">
+            <circle cx="60" cy="60" r="52" class="sr-ring-bg"/>
+            <circle id="quizScoreArc" cx="60" cy="60" r="52" class="sr-ring-arc quiz-score-arc"/>
+          </svg>
+          <div class="quiz-score-text">
+            <span id="quizScoreNum" class="quiz-score-num">0</span>
+            <span class="quiz-score-lbl">Punkte</span>
+          </div>
+        </div>
+        <p id="quizScoreText" class="quiz-score-desc"></p>
+        <div id="quizWeakTopics" class="quiz-weak-topics"></div>
+        <div class="quiz-result-btns">
+          <button id="btnQuizRetry" class="btn-quiz-start">🔄 Nochmal</button>
+          <button id="btnQuizRetryWeak" class="btn-quiz-weak hidden">📉 Nur Fehler wiederholen</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+    <!-- ── Phase 4: Spaced Repetition ────────────────── -->
+    <section class="sr-section hidden" id="srSection">
+
+      <!-- Divider -->
+      <div class="phase-divider">
+        <span class="phase-label">Phase 4 – Spaced Repetition (SM-2)</span>
+        <span class="ml-badge">✨ ML Optimized</span>
+      </div>
+
+      <!-- Tabs -->
+      <div class="sr-tabs" id="srTabs">
+        <button class="sr-tab active" data-tab="dashboard">📊 Dashboard</button>
+        <button class="sr-tab" data-tab="weaknesses">📉 Schwächen</button>
+      </div>
+      <!-- Schwächen-Tab -->
+      <div id="srWeaknessTab" class="hidden">
+        <div id="weaknessList" class="weakness-list"></div>
+        <button id="btnQuizWeaknesses" class="btn-quiz-weak" style="margin-top:1rem">🧠 Schwächen im Quiz testen</button>
+      </div>
+
+      <!-- Status-Dashboard -->
+      <div id="srDashboardTab" class="sr-dashboard">
+        <!-- Fortschrittsring -->
+        <div class="sr-ring-wrap">
+          <svg class="sr-ring" viewBox="0 0 80 80">
+            <circle class="sr-ring-bg" cx="40" cy="40" r="34" />
+            <circle class="sr-ring-arc" cx="40" cy="40" r="34" id="srRingArc" />
+          </svg>
+          <div class="sr-ring-text">
+            <span class="sr-ring-num" id="srDueCount">0</span>
+            <span class="sr-ring-lbl">Fällig</span>
+          </div>
+        </div>
+        <!-- Stats -->
+        <div class="sr-stats-grid">
+          <div class="sr-stat-item">
+            <div class="sr-stat-val" id="srTotalCount">0</div>
+            <div class="sr-stat-label">Gesamt</div>
+          </div>
+          <div class="sr-stat-item">
+            <div class="sr-stat-val" id="srNewCount">0</div>
+            <div class="sr-stat-label">Neu</div>
+          </div>
+          <div class="sr-stat-item">
+            <div class="sr-stat-val" id="srLearnedCount">0</div>
+            <div class="sr-stat-label">Gelernt</div>
+          </div>
+          <div class="sr-stat-item">
+            <div class="sr-stat-val" id="srStreakCount">0</div>
+            <div class="sr-stat-label">Streak 🔥</div>
+          </div>
+        </div>
+        <!-- Start-Button -->
+        <button class="btn-sr-start" id="btnSrStart" disabled>
+          <span id="srStartLabel">▶ Review starten</span>
+        </button>
+      </div>
+
+      <!-- Review-View (Karte + 4-Button-Rating) -->
+      <div class="sr-review hidden" id="srReview">
+        <!-- Fortschritt -->
+        <div class="sr-review-progress">
+          <div class="sr-review-prog-bar-wrap">
+            <div class="sr-review-prog-bar" id="srReviewProgBar"></div>
+          </div>
+          <span class="sr-review-prog-label" id="srReviewProgLabel">0 / 0</span>
+        </div>
+
+        <!-- Flip-Karte (SM-2-Variante) -->
+        <div class="fc-card-wrap" style="margin:0 auto;">
+          <div class="fc-card" id="srCard">
+            <div class="fc-card-inner" id="srCardInner">
+              <div class="fc-card-front">
+                <div class="fc-card-typ" id="srCardTyp"></div>
+                <div class="fc-card-question" id="srCardFront"></div>
+                <div class="fc-card-hint">Tippen zum Aufdecken 🔄</div>
+              </div>
+              <div class="fc-card-back">
+                <div class="fc-card-answer" id="srCardBack"></div>
+                <div class="fc-card-diff" id="srCardDiff"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4-Button-Bewertung (nur sichtbar nach dem Aufdecken) -->
+        <div class="sr-rating-wrap hidden" id="srRatingWrap">
+          <p class="sr-rating-hint">Wie gut wusstest du es? <span class="kbd-hint">Tasten: 1 · 2 · 3 · 4</span></p>
+          <div class="sr-rating-btns">
+            <button class="sr-btn sr-btn-again" id="srBtnAgain" data-rating="0">
+              <span class="sr-btn-icon">🔁</span>
+              <span class="sr-btn-label">Nochmal</span>
+              <span class="sr-btn-interval">Sofort</span>
+            </button>
+            <button class="sr-btn sr-btn-hard" id="srBtnHard" data-rating="1">
+              <span class="sr-btn-icon">🔴</span>
+              <span class="sr-btn-label">Schwer</span>
+              <span class="sr-btn-interval">+10 Min</span>
+            </button>
+            <button class="sr-btn sr-btn-good" id="srBtnGood" data-rating="2">
+              <span class="sr-btn-icon">🟡</span>
+              <span class="sr-btn-label">Gut</span>
+              <span class="sr-btn-interval">+2 Tage</span>
+            </button>
+            <button class="sr-btn sr-btn-easy" id="srBtnEasy" data-rating="3">
+              <span class="sr-btn-icon">🟢</span>
+              <span class="sr-btn-label">Einfach</span>
+              <span class="sr-btn-interval">+4 Tage</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session-Abschluss -->
+      <div class="sr-done hidden" id="srDone">
+        <div class="sr-done-icon">🎉</div>
+        <h3 class="sr-done-title">Session abgeschlossen!</h3>
+        <div class="sr-done-stats" id="srDoneStats"></div>
+        <button class="btn-sr-start" id="btnSrAgain">Nochmäls wiederholen</button>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ── Footer ────────────────────────────────────────────────── -->
+  <footer class="footer">
+    <p>StudyAI · Phase 1 + 2 + 3 + 4 · Powered by <strong id="footerModel">Claude API</strong></p>
+  </footer>
+
+  <!-- ── Keyboard Hint ──────────────────────────────────────────────────────── -->
+  <div class="kbd-hint-global"><kbd onclick="document.getElementById('kbdHelpModal').classList.toggle('hidden')">?</kbd> Tastaturkürzel</div>
+
+  <!-- ── Firebase SDK (modular v10 compat) ────────────────────────────────────── -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+  <!-- ── DOMPurify – XSS-Schutz für KI-generierte HTML-Inhalte ────────────────── -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"
+          crossorigin="anonymous"
+          referrerpolicy="no-referrer"></script>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

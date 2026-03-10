@@ -1,0 +1,35 @@
+{
+  "name": "StudyAI – Intelligente Skript-Analyse",
+  "short_name": "StudyAI",
+  "description": "KI-gestützter Lernassistent: PDF hochladen, Flashcards & Lernplan erhalten",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a18",
+  "theme_color": "#7c3aed",
+  "lang": "de",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Neue Analyse starten",
+      "short_name": "Analyse",
+      "url": "/",
+      "description": "PDF hochladen und analysieren"
+    }
+  ]
+}

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Datenschutzerklärung – StudyAI</title>
+  <style>
+    :root {
+      --bg: #0d0d1a; --surface: #141428; --border: #2a2a4a;
+      --text: #e0e0f0; --muted: #7878a8; --accent: #7c3aed;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif;
+           line-height: 1.7; padding: 2rem 1rem; }
+    .container { max-width: 800px; margin: 0 auto; }
+    .logo-bar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2.5rem; }
+    .logo-bar img { width: 36px; height: 36px; }
+    .logo-bar span { font-size: 1.25rem; font-weight: 700; color: var(--accent); }
+    h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .subtitle { color: var(--muted); margin-bottom: 2.5rem; font-size: 0.9rem; }
+    h2 { font-size: 1.2rem; font-weight: 600; margin: 2rem 0 0.75rem;
+         padding-bottom: 0.4rem; border-bottom: 1px solid var(--border); }
+    h3 { font-size: 1rem; font-weight: 600; margin: 1.25rem 0 0.4rem; color: var(--accent); }
+    p, li { color: var(--muted); font-size: 0.925rem; margin-bottom: 0.6rem; }
+    ul { padding-left: 1.5rem; }
+    li { margin-bottom: 0.3rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back-link { display: inline-block; margin-top: 2.5rem; color: var(--accent);
+                 font-size: 0.875rem; }
+    .highlight-box { background: var(--surface); border: 1px solid var(--border);
+                     border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    .highlight-box p { margin-bottom: 0.3rem; }
+    .last-updated { color: var(--muted); font-size: 0.8rem; margin-top: 2rem; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="logo-bar">
+    <img src="/icons/icon.svg" alt="StudyAI Logo" />
+    <span>StudyAI</span>
+  </div>
+
+  <h1>Datenschutzerklärung</h1>
+  <p class="subtitle">Zuletzt aktualisiert: März 2026</p>
+
+  <!-- 1. Verantwortlicher -->
+  <h2>1. Verantwortlicher</h2>
+  <div class="highlight-box">
+    <p><strong>Verantwortlich im Sinne der DSGVO:</strong></p>
+    <p>[NAME DES BETREIBERS]<br/>
+       [STRASSE, PLZ, ORT]<br/>
+       [LAND]<br/>
+       E-Mail: <a href="mailto:datenschutz@studyai.app">datenschutz@studyai.app</a>
+    </p>
+  </div>
+  <p>Bei Fragen zur Verarbeitung Ihrer personenbezogenen Daten wenden Sie sich bitte per
+     E-Mail an die oben genannte Adresse.</p>
+
+  <!-- 2. Verarbeitete Daten -->
+  <h2>2. Welche Daten verarbeiten wir?</h2>
+
+  <h3>2.1 Kontodaten (bei Registrierung)</h3>
+  <ul>
+    <li>E-Mail-Adresse</li>
+    <li>Anzeigename (optional, aus Google-Konto übernommen)</li>
+    <li>Eindeutige User-ID (Firebase UID)</li>
+  </ul>
+
+  <h3>2.2 Lerndaten</h3>
+  <ul>
+    <li>Hochgeladene PDF-Dateien (nur zur Verarbeitung; werden nicht dauerhaft gespeichert)</li>
+    <li>Analyse-Ergebnisse (Zusammenfassungen, Themen, Schwierigkeitsgrade)</li>
+    <li>Flashcards und Karteikarten</li>
+    <li>Lernpläne und Prüfungstermine</li>
+    <li>Spaced-Repetition-Fortschritt (Bewertungen, Intervalle)</li>
+    <li>Quiz-Ergebnisse und Schwächenanalysen</li>
+  </ul>
+
+  <h3>2.3 Technische Daten</h3>
+  <ul>
+    <li>IP-Adresse (für Sicherheits-Audit-Logs, werden nach 30 Tagen anonymisiert)</li>
+    <li>Datum und Uhrzeit von Anfragen</li>
+    <li>Browser-Typ und -Version (User-Agent)</li>
+  </ul>
+
+  <!-- 3. Zweck und Rechtsgrundlage -->
+  <h2>3. Zweck der Verarbeitung und Rechtsgrundlagen</h2>
+  <ul>
+    <li><strong>Vertragserfüllung (DSGVO Art. 6 Abs. 1 lit. b):</strong> Bereitstellung der
+        KI-Lernfunktionen, Flashcard-Generierung, Spaced-Repetition-System.</li>
+    <li><strong>Einwilligung (DSGVO Art. 6 Abs. 1 lit. a):</strong> Lokale Datenspeicherung
+        (localStorage) für Offline-Nutzung, nach Ihrer ausdrücklichen Zustimmung.</li>
+    <li><strong>Berechtigte Interessen (DSGVO Art. 6 Abs. 1 lit. f):</strong>
+        Sicherheitsüberwachung, Missbrauchsschutz, Systemstabilität.</li>
+  </ul>
+
+  <!-- 4. Drittanbieter -->
+  <h2>4. Drittanbieter und Datenübermittlungen</h2>
+
+  <h3>4.1 Google Firebase (Authentifizierung & Cloud-Sync)</h3>
+  <p>Wir nutzen Google Firebase für die Benutzeranmeldung (Firebase Authentication) und
+     optionalen Cloud-Sync (Firestore). Google LLC, 1600 Amphitheatre Parkway,
+     Mountain View, CA 94043, USA.</p>
+  <p>Datenschutzrichtlinie: <a href="https://policies.google.com/privacy" target="_blank"
+     rel="noopener">policies.google.com/privacy</a></p>
+  <p>Für die Übermittlung in die USA gelten Standardvertragsklauseln (SCCs) gemäß
+     DSGVO Art. 46 Abs. 2 lit. c.</p>
+
+  <h3>4.2 Anthropic Claude API (KI-Analyse)</h3>
+  <p>Die Analyse-Funktionen (PDF-Analyse, Flashcard-Generierung, Quiz) nutzen die API von
+     Anthropic PBC, 548 Market St, San Francisco, CA 94104, USA.</p>
+  <p>Dabei werden Inhalte Ihrer hochgeladenen PDFs an die API übermittelt.
+     Datenschutzrichtlinie: <a href="https://www.anthropic.com/privacy" target="_blank"
+     rel="noopener">anthropic.com/privacy</a></p>
+  <p><strong>Hinweis:</strong> Laden Sie keine PDFs mit besonders sensiblen persönlichen
+     Daten (Gesundheitsdaten, Finanzdaten etc.) hoch.</p>
+
+  <!-- 5. Ihre Rechte -->
+  <h2>5. Ihre Rechte (DSGVO)</h2>
+  <ul>
+    <li><strong>Auskunft (Art. 15):</strong> Sie haben das Recht, Auskunft über die bei uns
+        gespeicherten Daten zu erhalten.</li>
+    <li><strong>Berichtigung (Art. 16):</strong> Sie können unrichtige Daten korrigieren
+        lassen.</li>
+    <li><strong>Löschung (Art. 17):</strong> Sie können die Löschung Ihrer Daten verlangen.
+        In der App: Konto → „Account löschen". Alle Daten werden sofort entfernt.</li>
+    <li><strong>Datenportabilität (Art. 20):</strong> Sie können Ihre Daten als
+        strukturierten Export (JSON/ZIP) herunterladen. In der App: Konto → „Daten
+        exportieren".</li>
+    <li><strong>Widerspruch (Art. 21):</strong> Sie können der Verarbeitung basierend auf
+        berechtigten Interessen widersprechen.</li>
+    <li><strong>Einwilligung widerrufen:</strong> Erteilte Einwilligungen (z.B.
+        localStorage-Consent) können Sie jederzeit mit Wirkung für die Zukunft widerrufen.</li>
+  </ul>
+  <p>Zur Ausübung Ihrer Rechte wenden Sie sich an:
+     <a href="mailto:datenschutz@studyai.app">datenschutz@studyai.app</a></p>
+  <p>Sie haben zudem das Recht, sich bei der zuständigen Datenschutzbehörde zu beschweren.</p>
+
+  <!-- 6. Datenspeicherung -->
+  <h2>6. Speicherdauer und Löschung</h2>
+  <ul>
+    <li>Lerndaten werden gespeichert, solange Ihr Konto aktiv ist.</li>
+    <li>Inaktive Konten (keine Nutzung seit 24 Monaten) werden automatisch gelöscht (DSGVO
+        Art. 5 Speicherbegrenzung).</li>
+    <li>Sicherheits-Audit-Logs werden nach 30 Tagen automatisch anonymisiert.</li>
+    <li>Nach Account-Löschung werden alle Daten sofort unwiderruflich entfernt.</li>
+  </ul>
+
+  <!-- 7. Cookies / localStorage -->
+  <h2>7. Cookies und lokale Datenspeicherung</h2>
+  <p>StudyAI setzt keine Tracking-Cookies. Wir nutzen ausschließlich:</p>
+  <ul>
+    <li><strong>localStorage:</strong> Zur lokalen Speicherung von Lernfortschritten für
+        Offline-Nutzung (nur nach Ihrer Einwilligung).</li>
+    <li><strong>sessionStorage:</strong> Für temporäre Session-Daten während Ihres
+        Browser-Besuchs.</li>
+    <li><strong>Firebase Authentication Tokens:</strong> Für die Anmeldung (technisch
+        notwendig, kein Tracking).</li>
+  </ul>
+
+  <!-- 8. Datensicherheit -->
+  <h2>8. Datensicherheit</h2>
+  <p>Alle Übertragungen erfolgen verschlüsselt via HTTPS/TLS. Passwörter werden niemals im
+     Klartext gespeichert. Der Zugriff auf Ihre Daten ist auf Ihr Konto beschränkt.</p>
+
+  <!-- 9. Änderungen -->
+  <h2>9. Änderungen dieser Datenschutzerklärung</h2>
+  <p>Wir behalten uns das Recht vor, diese Datenschutzerklärung bei Änderungen der
+     Rechtslage oder der App-Funktionalität anzupassen. Bei wesentlichen Änderungen
+     informieren wir Sie per E-Mail oder Benachrichtigung in der App.</p>
+
+  <p class="last-updated">Diese Datenschutzerklärung wurde zuletzt im März 2026 aktualisiert.</p>
+
+  <a href="/" class="back-link">← Zurück zu StudyAI</a>
+
+</div>
+</body>
+</html>

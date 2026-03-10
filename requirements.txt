@@ -1,0 +1,30 @@
+# ── Core Backend ──────────────────────────────────────────────────────────────
+anthropic>=0.50.0
+flask>=3.1.0
+flask-cors>=5.0.0
+flask-limiter>=3.0.0
+python-dotenv>=1.0.1
+werkzeug>=3.1.3
+
+# ── PDF-Verarbeitung ──────────────────────────────────────────────────────────
+PyPDF2>=3.0.1
+pdfplumber>=0.11.4
+
+# ── Flashcard-Export ──────────────────────────────────────────────────────────
+genanki>=0.13.0
+
+# ── ML / Spaced Repetition ───────────────────────────────────────────────────
+scikit-learn>=1.3.0
+numpy>=1.24.0
+joblib>=1.3.0
+
+# ── Web-Suche (Flashcard-Kontext) ─────────────────────────────────────────────
+duckduckgo-search>=6.0.0
+
+# ── Firebase Firestore Cloud-Sync (optional) ──────────────────────────────────
+# Setup: python firebase_setup.py <credentials.json>
+firebase-admin>=6.0.0
+
+# ── Stripe Billing (Phase 2, optional bis Monetarisierung aktiv) ──────────────
+# Benötigt für: /api/billing/checkout, /api/billing/portal, /api/webhooks/stripe
+stripe>=8.0.0
