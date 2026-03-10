@@ -2747,8 +2747,34 @@ async function initAuth() {
     _authEnabled = true;
 
     // Firebase initialisieren (compat SDK aus CDN)
-    const fbApp   = firebase.initializeApp(config.firebaseConfig);
-    _firebaseAuth = firebase.auth(fbApp);
+    // Sicherheitscheck: Firebase SDK muss geladen sein (CDN kann blockiert sein)
+    if (typeof firebase === "undefined" || !firebase.initializeApp) {
+        console.error("[Auth] Firebase SDK nicht geladen – CDN blockiert oder Offline");
+        // Seite neu laden um SW-Cache zu umgehen (einmalig)
+        const reloadKey = "studyai_firebase_reload_v1";
+        if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, "1");
+            console.log("[Auth] Versuche Seiten-Reload um Firebase zu laden…");
+            window.location.reload(true); // Hard reload (Cache bypass)
+            return;
+        }
+        // Zweiter Versuch fehlgeschlagen → Auth-Overlay mit Hinweis zeigen
+        _showAuthOverlay();
+        _showAuthError("Firebase Auth konnte nicht geladen werden. Bitte prüfe deine Internetverbindung und lade die Seite neu (Strg+Shift+R).");
+        return;
+    }
+
+    try {
+        const fbApp   = firebase.initializeApp(config.firebaseConfig);
+        _firebaseAuth = firebase.auth(fbApp);
+        sessionStorage.removeItem("studyai_firebase_reload_v1"); // Reload-Flag löschen
+        console.log("[Auth] Firebase initialisiert ✓ (Projekt:", config.firebaseConfig?.projectId, ")");
+    } catch (initErr) {
+        console.error("[Auth] Firebase-Init fehlgeschlagen:", initErr);
+        _showAuthOverlay();
+        _showAuthError("Anmeldung nicht verfügbar. Bitte die Seite neu laden (Strg+Shift+R).");
+        return;
+    }
 
     const googleProvider = new firebase.auth.GoogleAuthProvider();
 
@@ -2858,23 +2884,27 @@ async function initAuth() {
             // Eingeloggt – Token holen und App starten
             try {
                 _authToken = await user.getIdToken(false);
-                // Token alle 50 Minuten erneuern (Firebase-Tokens laufen nach 1h ab)
-                setInterval(async () => {
-                    try {
-                        _authToken = await user.getIdToken(true);
-                    } catch (refreshErr) {
-                        console.warn('[Auth] Token-Refresh fehlgeschlagen – automatischer Logout:', refreshErr);
-                        _authToken = null;
-                        try {
-                            await _firebaseAuth.signOut();
-                        } catch (signOutErr) {
-                            console.error('[Auth] Logout nach Refresh-Fehler fehlgeschlagen:', signOutErr);
-                        }
-                    }
-                }, 50 * 60 * 1000);
-            } catch {
+            } catch (tokenErr) {
+                // Token abgelaufen / ungültig → automatischer Logout
+                console.warn('[Auth] Token-Abruf fehlgeschlagen, erzwinge Logout:', tokenErr.code || tokenErr.message);
                 _authToken = null;
+                try { await _firebaseAuth.signOut(); } catch {}
+                // onAuthStateChanged wird erneut mit user=null aufgerufen → Overlay erscheint
+                return;
             }
+
+            // Token alle 50 Minuten erneuern (Firebase-Tokens laufen nach 1h ab)
+            setInterval(async () => {
+                try {
+                    _authToken = await user.getIdToken(true);
+                } catch (refreshErr) {
+                    console.warn('[Auth] Token-Refresh fehlgeschlagen – automatischer Logout:', refreshErr);
+                    _authToken = null;
+                    try { await _firebaseAuth.signOut(); } catch {}
+                }
+            }, 50 * 60 * 1000);
+
+            _hideAuthError();
             _hideAuthOverlay();
             _updateUserMenu(user);
             if (!_authBootDone) {
@@ -2885,6 +2915,7 @@ async function initAuth() {
             // Ausgeloggt
             _authToken = null;
             _updateUserMenu(null);
+            _hideAuthError();          // Alten Fehler ausblenden beim Overlay-Öffnen
             _showAuthOverlay();
         }
     });
@@ -3002,6 +3033,10 @@ function _friendlyAuthError(err) {
         "auth/network-request-failed": "Netzwerkfehler – bitte prüfe deine Verbindung.",
         "auth/invalid-credential":     "Ungültige Anmeldedaten. Bitte prüfe E-Mail und Passwort.",
         "auth/too-many-requests":      "Zu viele Versuche. Bitte kurz warten.",
+        "auth/internal-error":         "Anmeldefehler – bitte versuche es erneut.",
+        "auth/popup-blocked":          "Popup wurde blockiert – bitte Popup-Blocker deaktivieren.",
+        "auth/cancelled-popup-request":"Anmeldung abgebrochen.",
+        "auth/operation-not-allowed":  "Diese Anmeldmethode ist nicht aktiviert.",
     };
     return map[err.code] || err.message || "Unbekannter Fehler.";
 }

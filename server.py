@@ -164,7 +164,24 @@ def add_security_headers(response):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        # Scripts: eigene Dateien + Firebase SDK + Chart.js + DOMPurify + Mermaid
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+            "www.gstatic.com cdn.jsdelivr.net cdnjs.cloudflare.com "
+            "browser.sentry-cdn.com; "
+        # Verbindungen: Firebase Auth, Firestore, Sentry, Anthropic (via Server-Proxy)
+        "connect-src 'self' "
+            "*.googleapis.com *.firebaseio.com *.firebaseapp.com "
+            "securetoken.googleapis.com identitytoolkit.googleapis.com "
+            "*.sentry.io; "
+        # Frames: Google Sign-In Popup benötigt accounts.google.com
+        "frame-src accounts.google.com; "
+        # Bilder: Firebase Auth Avatare (lh3.googleusercontent.com)
+        "img-src 'self' data: https://lh3.googleusercontent.com https://www.gstatic.com; "
+        "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+        "font-src 'self' fonts.gstatic.com"
+    )
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     return response
