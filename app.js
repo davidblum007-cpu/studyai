@@ -3820,6 +3820,444 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 5 – KI-TUTOR-CHAT
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── State ────────────────────────────────────────────────────────────────────
+let _chatSessionId   = null;   // Aktuelle Session-ID für Chat
+let _chatStreaming    = false;  // SSE-Stream läuft gerade
+let _chatReader      = null;   // Aktiver ReadableStreamReader (zum Abbrechen)
+
+// ── Initialisierung ───────────────────────────────────────────────────────────
+function initChat(sessionId) {
+    _chatSessionId = sessionId;
+    const section = document.getElementById("chatSection");
+    if (section) section.classList.remove("hidden");
+
+    // Chat-Verlauf vom Server laden
+    loadChatHistory();
+
+    // Auto-Resize für Textarea
+    const input = document.getElementById("chatInput");
+    if (input) {
+        input.addEventListener("input", () => {
+            _chatUpdateCharCount();
+            _chatAutoResize(input);
+        });
+        // Enter senden, Shift+Enter = Zeilenumbruch
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+    }
+
+    // Senden-Button
+    document.getElementById("btnChatSend")?.addEventListener("click", () => sendChatMessage());
+
+    // Verlauf löschen
+    document.getElementById("btnChatClear")?.addEventListener("click", () => clearChatHistory());
+
+    // Vorschläge aus Session-Topics generieren
+    _chatGenerateSuggestions();
+
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ── Char-Counter ──────────────────────────────────────────────────────────────
+function _chatUpdateCharCount() {
+    const input = document.getElementById("chatInput");
+    const counter = document.getElementById("chatCharCount");
+    if (!input || !counter) return;
+    const len = input.value.length;
+    counter.textContent = `${len} / 2000`;
+    counter.classList.toggle("chat-char-warn", len > 1800);
+}
+
+// ── Auto-Resize Textarea ──────────────────────────────────────────────────────
+function _chatAutoResize(el) {
+    el.style.height = "auto";
+    const max = 150;
+    el.style.height = Math.min(el.scrollHeight, max) + "px";
+}
+
+// ── Vorschläge aus Session-Topics ────────────────────────────────────────────
+function _chatGenerateSuggestions() {
+    const container = document.getElementById("chatSuggestions");
+    if (!container) return;
+
+    const topics = analysisResult?.topics?.slice(0, 5) ?? [];
+    if (!topics.length) return;
+
+    // Fragen-Templates
+    const templates = [
+        t => `Erkläre mir den Begriff: "${t.title ?? t}"`,
+        t => `Was ist das Wichtigste zu "${t.title ?? t}"?`,
+        t => `Gib mir ein Beispiel für "${t.title ?? t}"`
+    ];
+
+    container.innerHTML = "";
+    topics.slice(0, 4).forEach((topic, i) => {
+        const btn = document.createElement("button");
+        btn.className = "chat-suggestion-pill";
+        const tpl = templates[i % templates.length];
+        const text = tpl(topic);
+        btn.textContent = text.length > 60 ? text.slice(0, 57) + "…" : text;
+        btn.title = text;
+        btn.addEventListener("click", () => {
+            const inp = document.getElementById("chatInput");
+            if (inp) {
+                inp.value = text;
+                _chatUpdateCharCount();
+                _chatAutoResize(inp);
+                inp.focus();
+            }
+        });
+        container.appendChild(btn);
+    });
+}
+
+// ── Chat-Verlauf laden ────────────────────────────────────────────────────────
+async function loadChatHistory() {
+    if (!_chatSessionId) return;
+    try {
+        const res = await fetch(`/api/sessions/${_chatSessionId}/chat`);
+        if (!res.ok) return;
+        const { history } = await res.json();
+
+        const chatWindow = document.getElementById("chatWindow");
+        if (!chatWindow) return;
+
+        // Welcome-Screen ausblenden wenn es bereits Nachrichten gibt
+        if (history && history.length > 0) {
+            document.getElementById("chatWelcome")?.classList.add("hidden");
+            history.forEach(msg => _chatRenderMessage(msg.role, msg.content));
+            _chatScrollToBottom();
+        }
+    } catch (e) {
+        console.warn("[Chat] Verlauf konnte nicht geladen werden:", e);
+    }
+}
+
+// ── Nachricht senden ──────────────────────────────────────────────────────────
+async function sendChatMessage() {
+    if (_chatStreaming) return;
+    if (!_chatSessionId) {
+        showToast("Bitte zuerst eine Analyse durchführen oder Session laden", "error");
+        return;
+    }
+
+    const input = document.getElementById("chatInput");
+    if (!input) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+    if (question.length > 2000) {
+        showToast("Frage zu lang (max. 2000 Zeichen)", "error");
+        return;
+    }
+
+    // Welcome-Screen ausblenden
+    document.getElementById("chatWelcome")?.classList.add("hidden");
+
+    // User-Nachricht rendern
+    _chatRenderMessage("user", question);
+
+    // Input leeren
+    input.value = "";
+    _chatUpdateCharCount();
+    _chatAutoResize(input);
+
+    // Senden-Button deaktivieren
+    const sendBtn = document.getElementById("btnChatSend");
+    if (sendBtn) { sendBtn.disabled = true; }
+
+    // Typing-Indikator
+    const typingId = _chatRenderTyping();
+    _chatStreaming = true;
+
+    try {
+        const resp = await fetch(`/api/sessions/${_chatSessionId}/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            _chatRemoveTyping(typingId);
+            _chatRenderError(err.error || "Fehler beim Senden der Nachricht");
+            return;
+        }
+
+        // SSE-Stream lesen
+        const reader = resp.body.getReader();
+        _chatReader = reader;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let assistantMsgEl = null;
+        let fullText = "";
+
+        _chatRemoveTyping(typingId);
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";  // Unvollständige Zeile aufbewahren
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const raw = line.slice(6).trim();
+                if (!raw) continue;
+
+                let parsed;
+                try { parsed = JSON.parse(raw); } catch { continue; }
+
+                if (parsed.text !== undefined) {
+                    // Chunk empfangen – Nachrichtenbubble aufbauen
+                    fullText += parsed.text;
+                    if (!assistantMsgEl) {
+                        assistantMsgEl = _chatRenderMessage("assistant", "");
+                    }
+                    _chatUpdateStreamingMessage(assistantMsgEl, fullText);
+                } else if (parsed.done) {
+                    // Stream abgeschlossen
+                    if (assistantMsgEl) {
+                        _chatFinalizeMessage(assistantMsgEl, fullText);
+                    }
+                } else if (parsed.error) {
+                    _chatRenderError(parsed.error);
+                }
+            }
+        }
+
+        _chatScrollToBottom();
+
+    } catch (e) {
+        if (e.name !== "AbortError") {
+            _chatRemoveTyping(typingId);
+            _chatRenderError("Verbindungsfehler. Bitte versuche es erneut.");
+        }
+    } finally {
+        _chatStreaming = false;
+        _chatReader = null;
+        if (sendBtn) { sendBtn.disabled = false; }
+        input.focus();
+    }
+}
+
+// ── Nachricht rendern ─────────────────────────────────────────────────────────
+function _chatRenderMessage(role, content) {
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return null;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `chat-msg chat-msg-${role}`;
+    wrapper.dataset.role = role;
+
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+
+    if (role === "assistant" && content) {
+        bubble.innerHTML = _chatFormatMarkdown(content);
+    } else {
+        // User-Nachrichten: reines textContent (kein HTML)
+        bubble.textContent = content;
+    }
+
+    wrapper.appendChild(bubble);
+
+    // Timestamp
+    const ts = document.createElement("span");
+    ts.className = "chat-ts";
+    ts.textContent = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    wrapper.appendChild(ts);
+
+    chatWindow.appendChild(wrapper);
+    _chatScrollToBottom();
+    return wrapper;
+}
+
+// ── Streaming-Update ──────────────────────────────────────────────────────────
+function _chatUpdateStreamingMessage(el, text) {
+    const bubble = el?.querySelector(".chat-bubble");
+    if (!bubble) return;
+    bubble.innerHTML = _chatFormatMarkdown(text) + '<span class="chat-cursor">▌</span>';
+    _chatScrollToBottom();
+}
+
+// ── Finalisierung Streaming ───────────────────────────────────────────────────
+function _chatFinalizeMessage(el, text) {
+    const bubble = el?.querySelector(".chat-bubble");
+    if (!bubble) return;
+    bubble.innerHTML = _chatFormatMarkdown(text);
+    el?.classList.add("chat-msg-done");
+}
+
+// ── Typing-Indikator ──────────────────────────────────────────────────────────
+function _chatRenderTyping() {
+    const id = "chat-typing-" + Date.now();
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return id;
+    const el = document.createElement("div");
+    el.id = id;
+    el.className = "chat-msg chat-msg-assistant chat-typing";
+    el.innerHTML = `<div class="chat-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+    chatWindow.appendChild(el);
+    _chatScrollToBottom();
+    return id;
+}
+
+function _chatRemoveTyping(id) {
+    document.getElementById(id)?.remove();
+}
+
+// ── Fehler-Nachricht ──────────────────────────────────────────────────────────
+function _chatRenderError(msg) {
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return;
+    const el = document.createElement("div");
+    el.className = "chat-msg chat-msg-error";
+    el.innerHTML = `<div class="chat-bubble chat-bubble-error">⚠️ ${escHtml(msg)}</div>`;
+    chatWindow.appendChild(el);
+    _chatScrollToBottom();
+}
+
+// ── Scroll to Bottom ──────────────────────────────────────────────────────────
+function _chatScrollToBottom() {
+    const chatWindow = document.getElementById("chatWindow");
+    if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+// ── Markdown → HTML (lightweight) ─────────────────────────────────────────────
+function _chatFormatMarkdown(text) {
+    if (!text) return "";
+    let html = text
+        // Code-Blöcke (```...```) – vor inline code
+        .replace(/```([^`]*)```/gs, (_, code) => `<pre class="chat-code-block"><code>${escHtml(code.trim())}</code></pre>`)
+        // Inline Code
+        .replace(/`([^`\n]+)`/g, (_, code) => `<code class="chat-inline-code">${escHtml(code)}</code>`)
+        // Bold **text**
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        // Italic *text*
+        .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+        // Nummerierte Liste
+        .replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>")
+        // Bulletpoints
+        .replace(/^[-\u2022]\s+(.+)$/gm, "<li>$1</li>")
+        // Wrap li-Gruppen in <ul>
+        .replace(/((?:<li>.*?<\/li>\n?)+)/gs, "<ul>$1</ul>")
+        // Zeilenumbrüche → <br>
+        .replace(/\n(?!<\/?(ul|li|pre|code))/g, "<br>");
+
+    if (typeof DOMPurify !== "undefined") {
+        html = DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ["strong","em","code","pre","ul","li","br","span"],
+            ALLOWED_ATTR: ["class"]
+        });
+    }
+    return html;
+}
+
+// ── Chat-Verlauf löschen ──────────────────────────────────────────────────────
+async function clearChatHistory() {
+    if (!_chatSessionId) return;
+    const ok = window.confirm("Chat-Verlauf wirklich löschen?");
+    if (!ok) return;
+
+    try {
+        const res = await fetch(`/api/sessions/${_chatSessionId}/chat`, { method: "DELETE" });
+        if (!res.ok) {
+            showToast("Fehler beim Löschen", "error");
+            return;
+        }
+
+        // UI zurücksetzen
+        const chatWindow = document.getElementById("chatWindow");
+        if (chatWindow) {
+            Array.from(chatWindow.children).forEach(child => {
+                if (child.id !== "chatWelcome") child.remove();
+            });
+            document.getElementById("chatWelcome")?.classList.remove("hidden");
+        }
+        showToast("Chat-Verlauf gelöscht", "success");
+    } catch (e) {
+        showToast("Fehler beim Löschen des Verlaufs", "error");
+    }
+}
+
+// ── Integration: Chat-Button Event-Listener ───────────────────────────────────
+document.getElementById("btnOpenChat")?.addEventListener("click", () => {
+    if (!_chatSessionId && currentSessionId) {
+        _chatSessionId = currentSessionId;
+        loadChatHistory();
+        _chatGenerateSuggestions();
+    }
+    const cs = document.getElementById("chatSection");
+    if (cs) {
+        cs.classList.remove("hidden");
+        cs.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+});
+
+// ── Integration: Chat nach renderResults aktivieren ───────────────────────────
+const _p5RenderResults = window.renderResults;
+window.renderResults = function(data) {
+    _p5RenderResults(data);
+    // Chat-Sektion anzeigen wenn Session vorhanden
+    if (currentSessionId) {
+        _chatSessionId = currentSessionId;
+        const cs = document.getElementById("chatSection");
+        if (cs) cs.classList.remove("hidden");
+        _chatGenerateSuggestions();
+    }
+};
+
+// ── Integration: Chat nach loadSession laden ──────────────────────────────────
+const _p5OrigLoadSession = window.loadSession;
+window.loadSession = async function(sessionId) {
+    await _p5OrigLoadSession(sessionId);
+    if (sessionId) {
+        _chatSessionId = sessionId;
+        // Chat-Verlauf laden (leise)
+        try {
+            const res = await fetch(`/api/sessions/${sessionId}/chat`);
+            if (res.ok) {
+                const { history } = await res.json();
+                if (history && history.length > 0) {
+                    const cs = document.getElementById("chatSection");
+                    if (cs) cs.classList.remove("hidden");
+                    document.getElementById("chatWelcome")?.classList.add("hidden");
+                    history.forEach(msg => _chatRenderMessage(msg.role, msg.content));
+                    _chatScrollToBottom();
+                }
+            }
+        } catch (_) { /* ignore */ }
+    }
+};
+
+// ── Integration: Chat bei resetApp ausblenden ─────────────────────────────────
+const _p5ResetApp = window.resetApp;
+window.resetApp = function() {
+    _p5ResetApp();
+    document.getElementById("chatSection")?.classList.add("hidden");
+    const chatWindow = document.getElementById("chatWindow");
+    if (chatWindow) {
+        Array.from(chatWindow.children).forEach(child => {
+            if (child.id !== "chatWelcome") child.remove();
+        });
+        document.getElementById("chatWelcome")?.classList.remove("hidden");
+    }
+    _chatSessionId = null;
+    _chatStreaming  = false;
+};
+
+
 // ── App starten ───────────────────────────────────────────────────────────────
 (async () => {
     await initAuth();

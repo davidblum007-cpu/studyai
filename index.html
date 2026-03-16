@@ -43,7 +43,7 @@
     <div class="nav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">StudyAI</span>
-      <span class="brand-badge">Phase 1–4</span>
+      <span class="brand-badge">Phase 1–5</span>
     </div>
     <div class="nav-right">
       <div class="nav-status" id="navStatus">
@@ -502,6 +502,7 @@
           <div class="fc-actions">
             <button class="btn-ghost" id="btnFcDownload">⬇️ Anki-Export</button>
             <button class="btn-ghost" id="btnFcShuffle">🔀 Mischen</button>
+            <button class="btn-ghost btn-open-chat" id="btnOpenChat" title="KI-Tutor-Chat öffnen">💬 KI-Tutor</button>
           </div>
         </div>
 
@@ -781,11 +782,52 @@
 
     </section>
 
+    <!-- ── Phase 5: Chat-Tutor ────────────────────────────────────────────── -->
+    <section id="chatSection" class="chat-section hidden">
+      <div class="phase-divider">
+        <span class="phase-label">💬 Phase 5 – KI-Tutor-Chat</span>
+        <span class="ml-badge">✨ Powered by Claude</span>
+      </div>
+
+      <!-- Chat-Fenster -->
+      <div class="chat-window" id="chatWindow">
+        <!-- Nachrichten werden per JS eingefügt -->
+        <div class="chat-welcome" id="chatWelcome">
+          <div class="chat-welcome-icon">🤖</div>
+          <h3>Hallo! Ich bin dein KI-Tutor.</h3>
+          <p>Ich habe dein Lernmaterial analysiert und beantworte gerne deine Fragen dazu. Was möchtest du wissen?</p>
+          <div class="chat-suggestions" id="chatSuggestions">
+            <!-- Vorschläge werden per JS eingefügt -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Eingabe -->
+      <div class="chat-input-row">
+        <textarea id="chatInput" class="chat-input"
+                  placeholder="Stelle eine Frage zu deinem Lernmaterial…"
+                  rows="1" maxlength="2000"></textarea>
+        <button id="btnChatSend" class="btn-chat-send" title="Senden (Enter)">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="chat-toolbar">
+        <span class="chat-char-count" id="chatCharCount">0 / 2000</span>
+        <button id="btnChatClear" class="btn-chat-clear" title="Chat-Verlauf löschen">
+          🗑️ Verlauf löschen
+        </button>
+      </div>
+    </section>
+
   </main>
 
   <!-- ── Footer ────────────────────────────────────────────────── -->
   <footer class="footer">
-    <p>StudyAI · Phase 1 + 2 + 3 + 4 · Powered by <strong id="footerModel">Claude API</strong></p>
+    <p>StudyAI · Phase 1–5 · Powered by <strong id="footerModel">Claude API</strong></p>
   </footer>
 
   <!-- ── Keyboard Hint ──────────────────────────────────────────────────────── -->

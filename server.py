@@ -47,6 +47,10 @@ Endpoints:
 
   GET    /privacy.html                 → Datenschutzerklärung
   GET    /terms.html                   → Nutzungsbedingungen
+
+  GET    /api/sessions/<id>/chat       → Chat-History laden (Phase 5)
+  POST   /api/sessions/<id>/chat       → Frage stellen + SSE-Streaming-Antwort (Phase 5)
+  DELETE /api/sessions/<id>/chat       → Chat-History löschen (Phase 5)
 """
 
 import os
@@ -105,6 +109,7 @@ from agents.security_agent import SecurityError
 from agents.planner_agent import PlannerAgent
 from agents.flashcard_agent import FlashcardAgent
 from agents.ml_sr_engine import MLSpacedRepetitionEngine
+from agents.chat_agent import ChatAgent
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 _log_file_handler = RotatingFileHandler(
@@ -194,6 +199,7 @@ flashcarder  = FlashcardAgent()
 ml_sr_engine = MLSpacedRepetitionEngine()
 db           = Database()
 quiz_agent   = QuizAgent()
+chat_agent   = ChatAgent()
 firebase     = FirebaseSync()
 sec_mgr      = SecurityManager(db_path=db.db_path)
 sec_mgr.init_app(app)
@@ -1342,6 +1348,119 @@ def generate_quiz():
     return Response(stream_with_context(generate()),
                     mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Phase 5: Chat-Tutor ───────────────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/chat", methods=["GET"])
+def get_chat_history(session_id: str):
+    """Gibt die Chat-History einer Session zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    history = db.get_chat_history(session_id, user["uid"])
+    return jsonify({"history": history})
+
+
+@app.route("/api/sessions/<session_id>/chat", methods=["POST"])
+@limiter.limit("30 per minute")
+@limiter.limit("5 per minute", key_func=_get_rate_limit_key)
+def chat_with_tutor(session_id: str):
+    """
+    Stellt eine Frage an den KI-Tutor und streamt die Antwort via SSE.
+    Body: {question: str}
+    SSE Events: chunk {text} | done {message_id} | error {message}
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    data     = request.get_json(force=True, silent=True) or {}
+    question = (data.get("question") or "").strip()
+
+    if not question:
+        return jsonify({"error": "Frage darf nicht leer sein."}), 400
+    if len(question) > 2000:
+        return jsonify({"error": "Frage zu lang (max. 2000 Zeichen)."}), 400
+
+    # Analyseergebnis + Flashcards für Kontext laden
+    result     = session.get("result") or {}
+    flashcards = session.get("flashcards") or []
+
+    # Chat-History laden (für Gesprächs-Kontext)
+    history = db.get_chat_history(session_id, user["uid"], limit=40)
+
+    # User-Nachricht sofort persistieren
+    db.add_chat_message(session_id, user["uid"], "user", question)
+
+    # Billing-Callback für Token-Tracking
+    uid = user["uid"]
+    def token_cb(tokens_in, tokens_out):
+        try:
+            db.log_tokens(uid, session_id, "ChatAgent", tokens_in, tokens_out)
+        except Exception:
+            pass
+
+    import queue as _queue
+
+    q: _queue.Queue = _queue.Queue()
+
+    def worker():
+        answer_parts = []
+        try:
+            for chunk in chat_agent.stream_response(question, history, result, flashcards):
+                answer_parts.append(chunk)
+                q.put(("chunk", {"text": chunk}))
+            # Vollständige Antwort persistieren
+            full_answer = "".join(answer_parts)
+            msg_id = db.add_chat_message(session_id, uid, "assistant", full_answer)
+            q.put(("done", {"message_id": msg_id, "length": len(full_answer)}))
+        except Exception as exc:
+            logger.exception("[Chat] Fehler bei Tutor-Antwort")
+            q.put(("error", {"message": str(exc)}))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def generate():
+        while True:
+            try:
+                event_type, payload = q.get(timeout=120)
+            except _queue.Empty:
+                yield "event: error\ndata: {\"message\": \"Timeout\"}\n\n"
+                break
+            yield f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if event_type in ("done", "error"):
+                break
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/sessions/<session_id>/chat", methods=["DELETE"])
+def delete_chat_history(session_id: str):
+    """Löscht die gesamte Chat-History einer Session."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    deleted = db.delete_chat_history(session_id, user["uid"])
+    return jsonify({"deleted": deleted, "message": f"{deleted} Nachrichten gelöscht."})
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────────────────

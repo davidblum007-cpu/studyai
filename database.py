@@ -138,6 +138,20 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_usage_uid_period ON usage_tracking(uid, period);
             CREATE INDEX IF NOT EXISTS idx_token_logs_uid   ON token_logs(uid);
             CREATE INDEX IF NOT EXISTS idx_users_stripe     ON users(stripe_customer_id);
+
+            -- ── Phase 5: Chat-Tutor ────────────────────────────────────────────
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id          TEXT    PRIMARY KEY,
+                session_id  TEXT    NOT NULL,
+                user_id     TEXT    NOT NULL,
+                role        TEXT    NOT NULL CHECK(role IN ('user', 'assistant')),
+                content     TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_session_id  ON chat_messages(session_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_created_at  ON chat_messages(session_id, created_at);
         """)
         conn.commit()
         # Migration: user_id-Spalte zu bestehenden Datenbanken hinzufügen
@@ -576,3 +590,41 @@ class Database:
         # Usage-Tracking asynchron nicht blockieren – direkt aktualisieren
         self.increment_usage(uid, "api_tokens_in",  tokens_in)
         self.increment_usage(uid, "api_tokens_out", tokens_out)
+
+    # ── Phase 5: Chat-Tutor ────────────────────────────────────────────────────
+
+    def get_chat_history(self, session_id: str, user_id: str,
+                         limit: int = 50) -> List[Dict[str, Any]]:
+        """Gibt die Chat-History einer Session zurück (älteste zuerst)."""
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT id, role, content, created_at
+            FROM   chat_messages
+            WHERE  session_id = ? AND user_id = ?
+            ORDER  BY created_at ASC
+            LIMIT  ?
+        """, (session_id, user_id, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_chat_message(self, session_id: str, user_id: str,
+                         role: str, content: str) -> str:
+        """Speichert eine Chat-Nachricht und gibt ihre ID zurück."""
+        msg_id = str(uuid.uuid4())
+        now    = datetime.now(timezone.utc).isoformat()
+        conn   = self._get_conn()
+        conn.execute("""
+            INSERT INTO chat_messages (id, session_id, user_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (msg_id, session_id, user_id, role, content, now))
+        conn.commit()
+        return msg_id
+
+    def delete_chat_history(self, session_id: str, user_id: str) -> int:
+        """Löscht die gesamte Chat-History einer Session. Gibt Anzahl gelöschter Rows zurück."""
+        conn = self._get_conn()
+        cur  = conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id)
+        )
+        conn.commit()
+        return cur.rowcount
