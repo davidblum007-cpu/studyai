@@ -4634,3 +4634,331 @@ textarea:focus-visible,
         padding: 0.35rem 0.75rem;
     }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PHASE 6 – DECK-SHARING, GAMIFICATION, KI-VERBESSERUNG
+══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Share-Button in FC-Toolbar ──────────────────────────────────────────── */
+.btn-share-deck {
+    background: rgba(6, 182, 212, 0.1);
+    border-color: rgba(6, 182, 212, 0.35) !important;
+    color: var(--cyan-light) !important;
+}
+.btn-share-deck:hover {
+    background: rgba(6, 182, 212, 0.2) !important;
+    border-color: var(--cyan) !important;
+    color: #fff !important;
+}
+
+/* ── KI-Verbessern-Button ────────────────────────────────────────────────── */
+.fc-action-improve {
+    background: rgba(124, 58, 237, 0.12);
+    border: 1px solid rgba(124, 58, 237, 0.3);
+    color: var(--violet-light);
+}
+.fc-action-improve:hover:not(:disabled) {
+    background: rgba(124, 58, 237, 0.25);
+    border-color: var(--violet);
+    color: #fff;
+}
+.fc-action-improve:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ── Verbesserungs-Vorschau-Modal ────────────────────────────────────────── */
+.improve-preview-modal {
+    max-width: 700px;
+    width: 95vw;
+}
+.improve-note {
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+    border-radius: 8px;
+    padding: 0.6rem 0.9rem;
+    font-size: 0.875rem;
+    color: var(--cyan-light);
+    margin-bottom: 1rem;
+}
+.improve-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+}
+.improve-col-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+}
+.improve-field-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0.5rem 0 0.2rem;
+}
+.improve-text {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.75rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.improve-text-old {
+    border-color: rgba(239, 68, 68, 0.2);
+    background: rgba(239, 68, 68, 0.05);
+}
+.improve-text-new {
+    border-color: rgba(16, 185, 129, 0.3);
+    background: rgba(16, 185, 129, 0.06);
+}
+.improve-text-hint {
+    border-color: rgba(245, 158, 11, 0.25);
+    background: rgba(245, 158, 11, 0.05);
+    color: var(--amber);
+    font-size: 0.82rem;
+    font-style: italic;
+}
+@media (max-width: 600px) {
+    .improve-compare { grid-template-columns: 1fr; }
+}
+
+/* ── Share-Modal ─────────────────────────────────────────────────────────── */
+.share-modal-card {
+    max-width: 500px;
+    width: 95vw;
+}
+.share-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.75rem;
+}
+.share-modal-header h3 { margin: 0; font-size: 1.15rem; }
+.share-modal-desc {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+}
+.share-url-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+.share-url-input {
+    flex: 1;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.8rem;
+    color: var(--cyan-light);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.82rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.btn-copy-share {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.55rem 0.75rem;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: var(--transition);
+    color: var(--text-primary);
+}
+.btn-copy-share:hover { background: var(--bg-card-hover); }
+.share-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    min-height: 1.2em;
+}
+.share-modal-actions {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+/* ── Badges-Modal ────────────────────────────────────────────────────────── */
+.badges-modal-card {
+    max-width: 560px;
+    width: 95vw;
+}
+.badges-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+.badges-modal-header h3 { margin: 0; font-size: 1.15rem; }
+.badges-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+}
+.badge-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 0.9rem 0.75rem;
+    text-align: center;
+    transition: var(--transition);
+}
+.badge-earned {
+    border-color: rgba(245, 158, 11, 0.4);
+    background: rgba(245, 158, 11, 0.06);
+}
+.badge-earned:hover {
+    border-color: var(--amber);
+    transform: translateY(-2px);
+}
+.badge-locked {
+    opacity: 0.4;
+    filter: grayscale(1);
+}
+.badge-icon {
+    font-size: 1.75rem;
+    line-height: 1;
+    margin-bottom: 0.4rem;
+}
+.badge-label {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 0.2rem;
+}
+.badge-desc {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    line-height: 1.3;
+}
+.badge-date {
+    font-size: 0.68rem;
+    color: var(--amber);
+    margin-top: 0.25rem;
+}
+.badges-empty {
+    text-align: center;
+    padding: 1.5rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+@media (max-width: 480px) {
+    .badges-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ── Shared Deck View Modal ──────────────────────────────────────────────── */
+.shared-deck-card {
+    max-width: 620px;
+    width: 95vw;
+}
+.shared-deck-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+.shared-deck-header h3 { margin: 0; }
+.shared-deck-meta {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+.shared-cards-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    max-height: 450px;
+    overflow-y: auto;
+}
+.shared-card-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0.7rem 0.9rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    font-size: 0.875rem;
+}
+.shared-card-front {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+.shared-card-back {
+    color: var(--text-secondary);
+    border-left: 2px solid var(--border);
+    padding-left: 0.75rem;
+}
+.shared-more {
+    text-align: center;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    padding: 0.5rem;
+}
+
+/* ── Gamification: Streak in User-Menü ──────────────────────────────────── */
+.user-streak-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 1rem 0.25rem;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+.user-streak-icon {
+    font-size: 1.1rem;
+    line-height: 1;
+}
+#userStreakValue {
+    font-weight: 700;
+    color: var(--amber);
+}
+.user-streak-label {
+    flex: 1;
+    font-size: 0.82rem;
+}
+.user-badges-btn {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-radius: 99px;
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+    color: var(--amber);
+    cursor: pointer;
+    transition: var(--transition);
+    white-space: nowrap;
+}
+.user-badges-btn:hover {
+    background: rgba(245, 158, 11, 0.2);
+    border-color: var(--amber);
+    color: #fff;
+}
+
+/* ── Generischer Modal-Close-Button ─────────────────────────────────────── */
+.modal-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 0.2rem 0.4rem;
+    border-radius: 6px;
+    transition: var(--transition);
+    line-height: 1;
+}
+.modal-close-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}

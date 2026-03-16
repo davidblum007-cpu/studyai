@@ -51,6 +51,18 @@ Endpoints:
   GET    /api/sessions/<id>/chat       → Chat-History laden (Phase 5)
   POST   /api/sessions/<id>/chat       → Frage stellen + SSE-Streaming-Antwort (Phase 5)
   DELETE /api/sessions/<id>/chat       → Chat-History löschen (Phase 5)
+
+  POST   /api/sessions/<id>/share      → Share-Token erstellen (Phase 6)
+  GET    /api/sessions/<id>/share      → Aktiven Share-Token abrufen (Phase 6)
+  DELETE /api/sessions/<id>/share      → Share-Token widerrufen (Phase 6)
+  GET    /shared/<token>               → Öffentliche Deck-Ansicht (Phase 6)
+
+  POST   /api/sessions/<id>/flashcards/<card_id>/improve → KI-Karten-Verbesserung (Phase 6)
+
+  GET    /api/gamification/stats       → Streak + Badges des eingeloggten Users (Phase 6)
+  POST   /api/gamification/check       → Neue Badges prüfen + vergeben (Phase 6)
+
+  GET    /api/admin/stats              → Plattform-Statistiken (nur Admins, Phase 6)
 """
 
 import os
@@ -110,6 +122,8 @@ from agents.planner_agent import PlannerAgent
 from agents.flashcard_agent import FlashcardAgent
 from agents.ml_sr_engine import MLSpacedRepetitionEngine
 from agents.chat_agent import ChatAgent
+from agents.improve_card_agent import ImproveCardAgent
+from admin import is_admin, estimate_cost_usd
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 _log_file_handler = RotatingFileHandler(
@@ -197,11 +211,12 @@ orchestrator = OrchestratorAgent()
 planner      = PlannerAgent()
 flashcarder  = FlashcardAgent()
 ml_sr_engine = MLSpacedRepetitionEngine()
-db           = Database()
-quiz_agent   = QuizAgent()
-chat_agent   = ChatAgent()
-firebase     = FirebaseSync()
-sec_mgr      = SecurityManager(db_path=db.db_path)
+db             = Database()
+quiz_agent     = QuizAgent()
+chat_agent     = ChatAgent()
+improve_agent  = ImproveCardAgent()
+firebase       = FirebaseSync()
+sec_mgr        = SecurityManager(db_path=db.db_path)
 sec_mgr.init_app(app)
 
 
@@ -1461,6 +1476,197 @@ def delete_chat_history(session_id: str):
 
     deleted = db.delete_chat_history(session_id, user["uid"])
     return jsonify({"deleted": deleted, "message": f"{deleted} Nachrichten gelöscht."})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PHASE 6 – DECK-SHARING, GAMIFICATION, ADMIN, KI-KARTEN-VERBESSERUNG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 6.1 Deck-Sharing ──────────────────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/share", methods=["POST"])
+@limiter.limit("20 per hour")
+def create_share_link(session_id: str):
+    """Erstellt oder erneuert einen öffentlichen Share-Link für ein Flashcard-Deck."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    token = db.create_share_token(session_id, user["uid"], expires_days=30)
+    # Badge-Check: Erstes geteiltes Deck
+    new_badges = db.check_and_award_badges(user["uid"])
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "token":      token,
+        "share_url":  f"{base}/shared/{token}",
+        "expires_in": "30 Tage",
+        "new_badges": new_badges,
+    })
+
+
+@app.route("/api/sessions/<session_id>/share", methods=["GET"])
+def get_share_link(session_id: str):
+    """Gibt den aktiven Share-Token einer Session zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    info = db.get_share_token(session_id, user["uid"])
+    if not info:
+        return jsonify({"token": None, "share_url": None})
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "token":      info["token"],
+        "share_url":  f"{base}/shared/{info['token']}",
+        "view_count": info["view_count"],
+        "expires_at": info["expires_at"],
+    })
+
+
+@app.route("/api/sessions/<session_id>/share", methods=["DELETE"])
+def revoke_share_link(session_id: str):
+    """Widerruft den Share-Token einer Session."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    deleted = db.delete_share_token(session_id, user["uid"])
+    return jsonify({"success": deleted})
+
+
+@app.route("/shared/<token>")
+@limiter.limit("120 per minute")
+def shared_deck_view(token: str):
+    """
+    Öffentliche Deck-Ansicht (kein Login nötig).
+    Gibt JSON mit Flashcards + Session-Metadaten zurück.
+    """
+    share_info = db.get_shared_deck(token)
+    if not share_info:
+        return jsonify({"error": "Deck nicht gefunden oder Link abgelaufen"}), 404
+
+    session_id = share_info["session_id"]
+    session    = db.load_session(session_id)
+    if not session:
+        return jsonify({"error": "Session nicht mehr verfügbar"}), 404
+
+    # Nur öffentliche Felder zurückgeben (kein user_id, keine SR-States)
+    return jsonify({
+        "session_name":  session.get("name", "Unbenanntes Deck"),
+        "created_at":    session.get("created_at", ""),
+        "flashcards":    session.get("flashcards", []),
+        "card_count":    len(session.get("flashcards", [])),
+        "view_count":    share_info["view_count"],
+        "expires_at":    share_info.get("expires_at"),
+        "analysis_meta": {
+            k: v for k, v in (session.get("analysis", {}) or {}).get("metadata", {}).items()
+            if k in ("filename", "language", "total_pages", "summary")
+        } if session.get("analysis") else {},
+    })
+
+
+# ── 6.2 KI-Karten-Verbesserung ───────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/flashcards/<card_id>/improve", methods=["POST"])
+@limiter.limit("30 per hour")
+def improve_flashcard(session_id: str, card_id: str):
+    """Verbessert eine Flashcard mit Claude (Phase 6)."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    card = data.get("card")
+    if not card or not isinstance(card, dict):
+        return jsonify({"error": "card-Objekt fehlt"}), 400
+
+    # Optionalen Kontext aus der Session holen (Topics für bessere Antworten)
+    context = ""
+    try:
+        session = db.load_session(session_id)
+        if session and session.get("analysis"):
+            topics = session["analysis"].get("topics", [])[:5]
+            context = "Themen: " + ", ".join(
+                t.get("title", "") for t in topics if isinstance(t, dict)
+            )
+    except Exception:
+        pass
+
+    result = improve_agent.improve(card, context=context)
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+# ── 6.3 Gamification – Streak + Badges ───────────────────────────────────────
+
+@app.route("/api/gamification/stats", methods=["GET"])
+def gamification_stats():
+    """Gibt Streak, Total-Reviews, Total-Cards und alle Badges zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    streak    = db.get_streak(user["uid"])
+    reviews   = db.get_total_reviews(user["uid"])
+    cards     = db.get_total_cards(user["uid"])
+    badges    = db.get_user_badges(user["uid"])
+
+    return jsonify({
+        "streak":        streak,
+        "total_reviews": reviews,
+        "total_cards":   cards,
+        "badges":        badges,
+    })
+
+
+@app.route("/api/gamification/check", methods=["POST"])
+@limiter.limit("60 per hour")
+def gamification_check():
+    """Prüft und vergibt neue Badges. Gibt neu verdiente Badges zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    new_badges = db.check_and_award_badges(user["uid"])
+    return jsonify({"new_badges": new_badges})
+
+
+# ── 6.4 Admin-Dashboard ───────────────────────────────────────────────────────
+
+@app.route("/api/admin/stats", methods=["GET"])
+def admin_stats():
+    """
+    Plattform-Statistiken für Admins.
+    Zugriff: UIDs in ADMIN_UIDS-Env-Variable ODER localhost.
+    """
+    user = get_current_user()
+    is_local = request.remote_addr in ("127.0.0.1", "::1", "localhost")
+
+    # Zugriffskontrolle: Admin-UID oder Localhost
+    if user and is_admin(user["uid"]):
+        pass  # Admin-UID → erlaubt
+    elif is_local and user is None:
+        pass  # Lokaler Zugriff ohne Auth → erlaubt für Entwicklung
+    else:
+        return jsonify({"error": "Zugriff verweigert"}), 403
+
+    stats = db.get_admin_stats()
+    # Kosten-Schätzung hinzufügen
+    stats["estimated_cost_usd"] = estimate_cost_usd(
+        stats.get("total_tokens_in", 0),
+        stats.get("total_tokens_out", 0),
+    )
+    stats["generated_at"] = datetime.now(timezone.utc).isoformat()
+    return jsonify(stats)
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────────────────

@@ -4258,6 +4258,360 @@ window.resetApp = function() {
 };
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 6 – DECK-SHARING, GAMIFICATION, KI-KARTEN-VERBESSERUNG
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 6.1 Deck-Sharing ──────────────────────────────────────────────────────────
+
+function openShareModal() {
+    if (!currentSessionId) {
+        showToast("Bitte zuerst eine Session laden oder analysieren", "error");
+        return;
+    }
+    const modal = document.getElementById("shareModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    _loadShareStatus();
+}
+
+async function _loadShareStatus() {
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const input = document.getElementById("shareUrlInput");
+        const meta  = document.getElementById("shareMeta");
+        if (data.share_url && input) {
+            input.value = data.share_url;
+            if (meta) meta.textContent =
+                `👁 ${data.view_count ?? 0} Aufrufe · Läuft ab: ${data.expires_at ? new Date(data.expires_at).toLocaleDateString("de-DE") : "–"}`;
+        } else if (input) {
+            input.value = "";
+            if (meta) meta.textContent = "Noch kein aktiver Link.";
+        }
+    } catch (_) {}
+}
+
+async function createShareLink() {
+    if (!currentSessionId) return;
+    const btn = document.getElementById("btnCreateShare");
+    if (btn) { btn.disabled = true; btn.textContent = "Erstelle…"; }
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || "Fehler", "error"); return; }
+        const input = document.getElementById("shareUrlInput");
+        if (input) input.value = data.share_url;
+        const meta = document.getElementById("shareMeta");
+        if (meta) meta.textContent = `✅ Link erstellt · ${data.expires_in} gültig`;
+        showToast("🔗 Share-Link erstellt!", "success");
+        if (data.new_badges?.length) _showNewBadges(data.new_badges);
+    } catch (e) {
+        showToast("Fehler beim Erstellen des Links", "error");
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "🔗 Link erstellen / erneuern"; }
+    }
+}
+
+async function revokeShareLink() {
+    if (!currentSessionId) return;
+    const ok = window.confirm("Share-Link wirklich widerrufen? Der Link wird ungültig.");
+    if (!ok) return;
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`, { method: "DELETE" });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            const input = document.getElementById("shareUrlInput");
+            if (input) input.value = "";
+            const meta = document.getElementById("shareMeta");
+            if (meta) meta.textContent = "Link wurde widerrufen.";
+            showToast("Link widerrufen", "success");
+        }
+    } catch (e) {
+        showToast("Fehler beim Widerrufen", "error");
+    }
+}
+
+function copyShareUrl() {
+    const input = document.getElementById("shareUrlInput");
+    if (!input || !input.value) return;
+    navigator.clipboard?.writeText(input.value).then(() => {
+        showToast("📋 Link kopiert!", "success");
+    }).catch(() => {
+        input.select();
+        document.execCommand("copy");
+        showToast("📋 Link kopiert!", "success");
+    });
+}
+
+/** Prüft ob URL /shared/<token> ist und zeigt Deck-Preview an. */
+async function _checkSharedDeckUrl() {
+    const path  = window.location.pathname;
+    const match = path.match(/^\/shared\/([A-Za-z0-9_-]{10,20})$/);
+    if (!match) return;
+    const token = match[1];
+    try {
+        const res  = await fetch(`/shared/${token}`);
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || "Deck nicht gefunden", "error"); return; }
+        _renderSharedDeck(data);
+    } catch (e) {
+        showToast("Fehler beim Laden des geteilten Decks", "error");
+    }
+}
+
+function _renderSharedDeck(data) {
+    const modal   = document.getElementById("sharedDeckModal");
+    const content = document.getElementById("sharedDeckContent");
+    const title   = document.getElementById("sharedDeckTitle");
+    if (!modal || !content) return;
+
+    if (title) title.textContent = `📚 ${data.session_name}`;
+
+    const cards = data.flashcards || [];
+    content.innerHTML = `
+        <div class="shared-deck-meta">
+            <span>🃏 ${cards.length} Karten</span>
+            <span>👁 ${data.view_count ?? 0} Aufrufe</span>
+            ${data.analysis_meta?.language ? `<span>🌐 ${escHtml(data.analysis_meta.language)}</span>` : ""}
+        </div>
+        <div class="shared-cards-list">
+            ${cards.slice(0, 20).map(c => `
+                <div class="shared-card-item">
+                    <div class="shared-card-front">${escHtml(c.front ?? "")}</div>
+                    <div class="shared-card-back">${escHtml(c.back ?? "")}</div>
+                </div>
+            `).join("")}
+            ${cards.length > 20 ? `<p class="shared-more">… und ${cards.length - 20} weitere Karten</p>` : ""}
+        </div>`;
+
+    modal.classList.remove("hidden");
+}
+
+// Share-Modal Event-Listener
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btnShareDeck")?.addEventListener("click", openShareModal);
+    document.getElementById("btnShareModalClose")?.addEventListener("click", () =>
+        document.getElementById("shareModal")?.classList.add("hidden"));
+    document.getElementById("btnCreateShare")?.addEventListener("click", createShareLink);
+    document.getElementById("btnRevokeShare")?.addEventListener("click", revokeShareLink);
+    document.getElementById("btnCopyShareUrl")?.addEventListener("click", copyShareUrl);
+    document.getElementById("shareModal")?.addEventListener("click", (e) => {
+        if (e.target === document.getElementById("shareModal"))
+            document.getElementById("shareModal")?.classList.add("hidden");
+    });
+    document.getElementById("btnSharedDeckClose")?.addEventListener("click", () =>
+        document.getElementById("sharedDeckModal")?.classList.add("hidden"));
+    _checkSharedDeckUrl();
+});
+
+// ── 6.2 KI-Karten-Verbesserung ───────────────────────────────────────────────
+
+async function improveCurrentCard() {
+    if (!fcFiltered.length) return;
+    const card = fcFiltered[fcCurrentIdx];
+    if (!card || !currentSessionId) return;
+
+    const btn = document.getElementById("fcImproveBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "🤖 Verbessere…"; }
+
+    try {
+        const res  = await fetch(
+            `/api/sessions/${currentSessionId}/flashcards/${card.id}/improve`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ card }),
+            }
+        );
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            showToast(data.error || "KI-Verbesserung fehlgeschlagen", "error");
+            return;
+        }
+        _showImprovePreview(card, data);
+    } catch (e) {
+        showToast("Verbindungsfehler bei KI-Verbesserung", "error");
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "🤖 KI verbessern"; }
+    }
+}
+
+function _showImprovePreview(originalCard, improved) {
+    document.getElementById("improvePreviewOverlay")?.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "improvePreviewOverlay";
+    overlay.className = "fc-editor-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Verbesserungsvorschlag");
+
+    overlay.innerHTML = `
+        <div class="fc-editor-modal improve-preview-modal">
+            <h3 class="fc-editor-title">🤖 KI-Verbesserungsvorschlag</h3>
+            ${improved.improvement_note ? `<p class="improve-note">💡 ${escHtml(improved.improvement_note)}</p>` : ""}
+            <div class="improve-compare">
+                <div class="improve-col">
+                    <div class="improve-col-label">Vorher</div>
+                    <div class="improve-field-label">Vorderseite</div>
+                    <div class="improve-text improve-text-old">${escHtml(originalCard.front ?? "")}</div>
+                    <div class="improve-field-label">Rückseite</div>
+                    <div class="improve-text improve-text-old">${escHtml(originalCard.back ?? "")}</div>
+                </div>
+                <div class="improve-col">
+                    <div class="improve-col-label">Nachher ✨</div>
+                    <div class="improve-field-label">Vorderseite</div>
+                    <div class="improve-text improve-text-new">${escHtml(improved.front ?? "")}</div>
+                    <div class="improve-field-label">Rückseite</div>
+                    <div class="improve-text improve-text-new">${escHtml(improved.back ?? "")}</div>
+                    ${improved.hint ? `<div class="improve-field-label">Tipp</div>
+                    <div class="improve-text improve-text-hint">${escHtml(improved.hint)}</div>` : ""}
+                </div>
+            </div>
+            <div class="fc-editor-actions">
+                <button class="btn-primary" id="btnImproveAccept">✅ Übernehmen</button>
+                <button class="btn-ghost" id="btnImproveCancel">Verwerfen</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById("btnImproveCancel")?.addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") overlay.remove(); });
+
+    document.getElementById("btnImproveAccept")?.addEventListener("click", async () => {
+        const updates = { front: improved.front, back: improved.back };
+        if (improved.hint) updates.hint = improved.hint;
+        try {
+            const res = await fetch(
+                `/api/sessions/${currentSessionId}/flashcards/${originalCard.id}`,
+                {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ card: updates }),
+                }
+            );
+            if (res.ok) {
+                Object.assign(originalCard, updates);
+                if (typeof showCard === "function") showCard(fcCurrentIdx);
+                showToast("✅ Karte verbessert und gespeichert", "success");
+                overlay.remove();
+                _checkBadges();
+            } else {
+                showToast("Fehler beim Speichern", "error");
+            }
+        } catch (e) {
+            showToast("Verbindungsfehler", "error");
+        }
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("fcImproveBtn")?.addEventListener("click", improveCurrentCard);
+});
+
+// ── 6.3 Gamification – Streak + Badges ───────────────────────────────────────
+
+window._userBadges = [];
+
+async function loadGamificationStats() {
+    try {
+        const res = await fetch("/api/gamification/stats");
+        if (!res.ok) return;
+        const data = await res.json();
+        const streakEl = document.getElementById("userStreakValue");
+        if (streakEl) streakEl.textContent = data.streak ?? 0;
+        window._userBadges = data.badges || [];
+        return data;
+    } catch (e) {
+        console.debug("[Gamification] Fehler:", e);
+    }
+}
+
+async function _checkBadges() {
+    try {
+        const res = await fetch("/api/gamification/check", { method: "POST" });
+        if (!res.ok) return;
+        const { new_badges } = await res.json();
+        if (new_badges?.length) {
+            _showNewBadges(new_badges);
+            window._userBadges = [...(window._userBadges || []), ...new_badges];
+        }
+    } catch (_) {}
+}
+
+function _showNewBadges(badges) {
+    badges.forEach(b => showToast(`${b.icon} Neues Badge: ${b.label}!`, "success"));
+}
+
+function openBadgesModal() {
+    const modal = document.getElementById("badgesModal");
+    const grid  = document.getElementById("badgesGrid");
+    const empty = document.getElementById("badgesEmpty");
+    if (!modal || !grid) return;
+
+    const badges = window._userBadges || [];
+    const ALL_BADGES = [
+        { key: "first_review",  icon: "🎯", label: "Erste Review",      desc: "Erste Lernkarte bewertet" },
+        { key: "streak_3",      icon: "🔥", label: "3-Tage-Streak",      desc: "3 Tage in Folge gelernt" },
+        { key: "streak_7",      icon: "🏆", label: "Wochenchampion",     desc: "7 Tage in Folge gelernt" },
+        { key: "streak_30",     icon: "💪", label: "Monatsmarathon",     desc: "30 Tage in Folge gelernt" },
+        { key: "cards_10",      icon: "📚", label: "Kartensammler",      desc: "10 Karten erstellt" },
+        { key: "cards_100",     icon: "🃏", label: "Kartenproffi",       desc: "100 Karten erstellt" },
+        { key: "reviews_50",    icon: "⚡", label: "Fleißig",            desc: "50 Reviews abgeschlossen" },
+        { key: "reviews_500",   icon: "🚀", label: "Ausdauer",           desc: "500 Reviews abgeschlossen" },
+        { key: "first_share",   icon: "🔗", label: "Teilen ist Lernen",  desc: "Erstes Deck geteilt" },
+    ];
+    const earnedKeys = new Set(badges.map(b => b.key));
+
+    if (!earnedKeys.size) {
+        grid.innerHTML = "";
+        empty?.classList.remove("hidden");
+    } else {
+        empty?.classList.add("hidden");
+        grid.innerHTML = ALL_BADGES.map(b => {
+            const earned = earnedKeys.has(b.key);
+            const eb = badges.find(x => x.key === b.key);
+            const dateStr = eb?.earned_at ? new Date(eb.earned_at).toLocaleDateString("de-DE") : "";
+            return `
+                <div class="badge-item ${earned ? "badge-earned" : "badge-locked"}">
+                    <div class="badge-icon">${earned ? b.icon : "🔒"}</div>
+                    <div class="badge-label">${escHtml(b.label)}</div>
+                    <div class="badge-desc">${escHtml(b.desc)}</div>
+                    ${earned && dateStr ? `<div class="badge-date">${dateStr}</div>` : ""}
+                </div>`;
+        }).join("");
+    }
+
+    modal.classList.remove("hidden");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btnShowBadges")?.addEventListener("click", () => {
+        _closeUserMenu();
+        openBadgesModal();
+    });
+    document.getElementById("btnBadgesModalClose")?.addEventListener("click", () =>
+        document.getElementById("badgesModal")?.classList.add("hidden"));
+    document.getElementById("badgesModal")?.addEventListener("click", (e) => {
+        if (e.target === document.getElementById("badgesModal"))
+            document.getElementById("badgesModal")?.classList.add("hidden");
+    });
+});
+
+// Gamification nach loadUserProfile nachladen
+const _p6OrigLoadUserProfile = window.loadUserProfile;
+window.loadUserProfile = async function() {
+    if (_p6OrigLoadUserProfile) await _p6OrigLoadUserProfile();
+    await loadGamificationStats();
+    // Badge-Check nach Login (neue Badges seit letztem Besuch?)
+    await _checkBadges();
+};
+
+
 // ── App starten ───────────────────────────────────────────────────────────────
 (async () => {
     await initAuth();
