@@ -7,6 +7,10 @@ studyai-f3063-firebase-adminsdk*.json
 # ── Datenbank (lokal, nicht versionieren) ────────────────────────────────────
 studyai.db
 
+# ── Backups + Datenbankvolume (durch backup.sh / Docker erzeugt) ─────────────
+backups/
+data/
+
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

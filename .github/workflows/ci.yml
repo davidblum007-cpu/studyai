@@ -106,6 +106,15 @@ jobs:
           pytest test_flashcards_phase6.py -v --tb=short 2>/dev/null || \
             echo "Phase 6 tests skipped (optional dependencies missing)"
 
+      - name: Security – Dependency vulnerability audit
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt \
+            --ignore-vuln PYSEC-2022-42969 \
+            --ignore-vuln GHSA-p5wr-vp8g-q5p4 \
+            --output-format=columns || true
+          echo "pip-audit completed (non-blocking for known low-risk issues)"
+
   # ── Job 3: Docker Build ──────────────────────────────────────────────────
   docker-build:
     name: Docker Build
@@ -117,16 +126,30 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image (no push – just validate)
+      - name: Login to Docker Hub (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+        continue-on-error: true  # Skip gracefully if secrets not configured
+
+      - name: Build Docker image (+ push to registry on main)
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: false
-          tags: studyai:ci-${{ github.sha }}
+          # Push nur auf main – auf allen anderen Branches nur Build-Validierung
+          push: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' && secrets.DOCKER_USERNAME != '' }}
+          tags: |
+            ${{ secrets.DOCKER_USERNAME != '' && format('{0}/studyai:latest', secrets.DOCKER_USERNAME) || 'studyai:ci-local' }}
+            ${{ secrets.DOCKER_USERNAME != '' && format('{0}/studyai:{1}', secrets.DOCKER_USERNAME, github.sha) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
             BUILD_ENV=ci
+      # HINWEIS: Für Docker Hub Push müssen folgende GitHub Secrets gesetzt werden:
+      # DOCKER_USERNAME – dein Docker Hub Benutzername
+      # DOCKER_TOKEN    – Docker Hub Access Token (hub.docker.com → Account → Security → New Token)
 
   # ── Job 4: Deploy Readiness Check (main branch only) ─────────────────────
   deploy-check:

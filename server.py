@@ -191,6 +191,8 @@ def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         # Scripts: eigene Dateien + Firebase SDK + Chart.js + DOMPurify + Mermaid
+        # TODO: 'unsafe-inline' entfernen, sobald alle Inline-Scripts in externe
+        # Dateien ausgelagert sind (Phase 8). Dann CSP-Nonces verwenden.
         "script-src 'self' 'unsafe-inline' "
             "www.gstatic.com cdn.jsdelivr.net cdnjs.cloudflare.com "
             "browser.sentry-cdn.com; "

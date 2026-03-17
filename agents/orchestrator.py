@@ -8,9 +8,13 @@ Gibt Fortschrittsupdates per Callback zurück (für SSE-Streaming).
 """
 
 import logging
+import os
 import threading
 from typing import Callable, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Maximale parallele Chunk-Analyse-Worker (via Env konfigurierbar)
+_MAX_WORKERS = int(os.getenv("ORCHESTRATOR_MAX_WORKERS", "4"))
 
 from agents.security_agent import SecurityAgent, SecurityError
 from agents.extractor_agent import ExtractorAgent
@@ -106,7 +110,7 @@ class OrchestratorAgent:
         analyses = [None] * total_chunks
         lock = threading.Lock()
         done_count = [0]  # Liste als Mutable-Trick für Closure
-        max_workers = min(4, total_chunks)
+        max_workers = min(_MAX_WORKERS, total_chunks)
 
         def analyze_chunk_task(chunk_data):
             chunk, index = chunk_data
