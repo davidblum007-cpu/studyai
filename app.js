@@ -1267,6 +1267,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "1") btnRateHard.click();
     if (e.key === "2") btnRateOk.click();
     if (e.key === "3") btnRateEasy.click();
+    // E = Karte bearbeiten
+    if (e.key === "e" || e.key === "E") openCardEditor();
 });
 
 // ── Bewertungs-System ─────────────────────────────────────────────────────────
@@ -2699,6 +2701,11 @@ let _authToken       = null;
 let _authEnabled     = false;
 let _authBootDone    = false;
 
+// ── Auth-Hilfsfunktion ────────────────────────────────────────────────────────
+// Der Fetch-Interceptor unten fügt den Bearer-Token automatisch zu /api/* URLs hinzu.
+// authHeaders() gibt leeres Objekt zurück – Token wird automatisch ergänzt.
+function authHeaders() { return {}; }
+
 // ── Fetch-Interceptor: Bearer-Token zu allen /api/ Requests ───────────────────
 // Muss VOR initAuth() stehen damit auch der ersten loadSessionList-Aufruf gesichert ist
 const _origApiFetch = window.fetch.bind(window);
@@ -2740,8 +2747,34 @@ async function initAuth() {
     _authEnabled = true;
 
     // Firebase initialisieren (compat SDK aus CDN)
-    const fbApp   = firebase.initializeApp(config.firebaseConfig);
-    _firebaseAuth = firebase.auth(fbApp);
+    // Sicherheitscheck: Firebase SDK muss geladen sein (CDN kann blockiert sein)
+    if (typeof firebase === "undefined" || !firebase.initializeApp) {
+        console.error("[Auth] Firebase SDK nicht geladen – CDN blockiert oder Offline");
+        // Seite neu laden um SW-Cache zu umgehen (einmalig)
+        const reloadKey = "studyai_firebase_reload_v1";
+        if (!sessionStorage.getItem(reloadKey)) {
+            sessionStorage.setItem(reloadKey, "1");
+            console.log("[Auth] Versuche Seiten-Reload um Firebase zu laden…");
+            window.location.reload(true); // Hard reload (Cache bypass)
+            return;
+        }
+        // Zweiter Versuch fehlgeschlagen → Auth-Overlay mit Hinweis zeigen
+        _showAuthOverlay();
+        _showAuthError("Firebase Auth konnte nicht geladen werden. Bitte prüfe deine Internetverbindung und lade die Seite neu (Strg+Shift+R).");
+        return;
+    }
+
+    try {
+        const fbApp   = firebase.initializeApp(config.firebaseConfig);
+        _firebaseAuth = firebase.auth(fbApp);
+        sessionStorage.removeItem("studyai_firebase_reload_v1"); // Reload-Flag löschen
+        console.log("[Auth] Firebase initialisiert ✓ (Projekt:", config.firebaseConfig?.projectId, ")");
+    } catch (initErr) {
+        console.error("[Auth] Firebase-Init fehlgeschlagen:", initErr);
+        _showAuthOverlay();
+        _showAuthError("Anmeldung nicht verfügbar. Bitte die Seite neu laden (Strg+Shift+R).");
+        return;
+    }
 
     const googleProvider = new firebase.auth.GoogleAuthProvider();
 
@@ -2851,23 +2884,27 @@ async function initAuth() {
             // Eingeloggt – Token holen und App starten
             try {
                 _authToken = await user.getIdToken(false);
-                // Token alle 50 Minuten erneuern (Firebase-Tokens laufen nach 1h ab)
-                setInterval(async () => {
-                    try {
-                        _authToken = await user.getIdToken(true);
-                    } catch (refreshErr) {
-                        console.warn('[Auth] Token-Refresh fehlgeschlagen – automatischer Logout:', refreshErr);
-                        _authToken = null;
-                        try {
-                            await _firebaseAuth.signOut();
-                        } catch (signOutErr) {
-                            console.error('[Auth] Logout nach Refresh-Fehler fehlgeschlagen:', signOutErr);
-                        }
-                    }
-                }, 50 * 60 * 1000);
-            } catch {
+            } catch (tokenErr) {
+                // Token abgelaufen / ungültig → automatischer Logout
+                console.warn('[Auth] Token-Abruf fehlgeschlagen, erzwinge Logout:', tokenErr.code || tokenErr.message);
                 _authToken = null;
+                try { await _firebaseAuth.signOut(); } catch {}
+                // onAuthStateChanged wird erneut mit user=null aufgerufen → Overlay erscheint
+                return;
             }
+
+            // Token alle 50 Minuten erneuern (Firebase-Tokens laufen nach 1h ab)
+            setInterval(async () => {
+                try {
+                    _authToken = await user.getIdToken(true);
+                } catch (refreshErr) {
+                    console.warn('[Auth] Token-Refresh fehlgeschlagen – automatischer Logout:', refreshErr);
+                    _authToken = null;
+                    try { await _firebaseAuth.signOut(); } catch {}
+                }
+            }, 50 * 60 * 1000);
+
+            _hideAuthError();
             _hideAuthOverlay();
             _updateUserMenu(user);
             if (!_authBootDone) {
@@ -2878,6 +2915,7 @@ async function initAuth() {
             // Ausgeloggt
             _authToken = null;
             _updateUserMenu(null);
+            _hideAuthError();          // Alten Fehler ausblenden beim Overlay-Öffnen
             _showAuthOverlay();
         }
     });
@@ -2900,6 +2938,9 @@ function _onAuthReady(user) {
     if (user) {
         loadUserProfile();
     }
+    // Onboarding-Tour für neue User starten
+    // (startOnboarding prüft intern ob bereits abgeschlossen)
+    startOnboarding();
 }
 
 // ── Auth-Overlay ──────────────────────────────────────────────────────────────
@@ -2992,6 +3033,10 @@ function _friendlyAuthError(err) {
         "auth/network-request-failed": "Netzwerkfehler – bitte prüfe deine Verbindung.",
         "auth/invalid-credential":     "Ungültige Anmeldedaten. Bitte prüfe E-Mail und Passwort.",
         "auth/too-many-requests":      "Zu viele Versuche. Bitte kurz warten.",
+        "auth/internal-error":         "Anmeldefehler – bitte versuche es erneut.",
+        "auth/popup-blocked":          "Popup wurde blockiert – bitte Popup-Blocker deaktivieren.",
+        "auth/cancelled-popup-request":"Anmeldung abgebrochen.",
+        "auth/operation-not-allowed":  "Diese Anmeldmethode ist nicht aktiviert.",
     };
     return map[err.code] || err.message || "Unbekannter Fehler.";
 }
@@ -3194,6 +3239,586 @@ document.getElementById("btnUpgrade")?.addEventListener("click", startUpgradeChe
 document.getElementById("btnManageBilling")?.addEventListener("click", openBillingPortal);
 document.getElementById("btnExportData")?.addEventListener("click", exportUserData);
 document.getElementById("btnDeleteAccount")?.addEventListener("click", deleteUserAccount);
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 4.1+4.2 – Flashcard CRUD (Bearbeiten / Löschen / Hinzufügen)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Zeigt den Inline-Editor für die aktuell sichtbare Flashcard.
+ * Fügt ein Overlay-Formular über dem Card-Element ein.
+ */
+function openCardEditor() {
+    if (!fcFiltered.length) return;
+    const card = fcFiltered[fcCurrentIdx];
+    if (!card) return;
+
+    // Verhindert doppeltes Öffnen
+    if (document.getElementById("fcCardEditorOverlay")) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "fcCardEditorOverlay";
+    overlay.className = "fc-editor-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Flashcard bearbeiten");
+
+    overlay.innerHTML = `
+        <div class="fc-editor-modal">
+            <h3 class="fc-editor-title">✏️ Flashcard bearbeiten</h3>
+            <div class="fc-editor-field">
+                <label for="fcEditFront">Vorderseite *</label>
+                <textarea id="fcEditFront" rows="3" maxlength="500" placeholder="Frage / Begriff...">${escHtml(card.front ?? "")}</textarea>
+            </div>
+            <div class="fc-editor-field">
+                <label for="fcEditBack">Rückseite *</label>
+                <textarea id="fcEditBack" rows="4" maxlength="2000" placeholder="Antwort / Erklärung...">${escHtml(card.back ?? "")}</textarea>
+            </div>
+            <div class="fc-editor-row">
+                <div class="fc-editor-field">
+                    <label for="fcEditTopic">Thema</label>
+                    <input type="text" id="fcEditTopic" maxlength="200" value="${escHtml(card.topic ?? card.thema ?? "")}">
+                </div>
+                <div class="fc-editor-field">
+                    <label for="fcEditHint">Tipp (optional)</label>
+                    <input type="text" id="fcEditHint" maxlength="500" value="${escHtml(card.hint ?? "")}">
+                </div>
+            </div>
+            <div class="fc-editor-actions">
+                <button class="btn-primary" id="fcEditorSave">💾 Speichern</button>
+                <button class="btn-ghost" id="fcEditorCancel">Abbrechen</button>
+                <button class="btn-danger" id="fcEditorDelete" title="Karte löschen">🗑 Löschen</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+
+    // Focus trap – erstes Textarea fokussieren
+    const firstInput = overlay.querySelector("textarea");
+    firstInput?.focus();
+
+    // Event-Listener
+    document.getElementById("fcEditorCancel").addEventListener("click", () => overlay.remove());
+    document.getElementById("fcEditorDelete").addEventListener("click", () => confirmDeleteCard(card, overlay));
+    document.getElementById("fcEditorSave").addEventListener("click", () => saveCardEdit(card, overlay));
+
+    // Schließen bei Klick außerhalb
+    overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+    // Escape-Taste
+    overlay.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") overlay.remove();
+    });
+}
+
+/**
+ * Speichert die bearbeitete Flashcard via PATCH-Endpoint.
+ */
+async function saveCardEdit(card, overlay) {
+    const front = document.getElementById("fcEditFront")?.value.trim();
+    const back  = document.getElementById("fcEditBack")?.value.trim();
+    if (!front || !back) {
+        showToast("Vorder- und Rückseite dürfen nicht leer sein", "error");
+        return;
+    }
+    const updates = {
+        front,
+        back,
+        topic: document.getElementById("fcEditTopic")?.value.trim() || undefined,
+        hint:  document.getElementById("fcEditHint")?.value.trim()  || undefined,
+    };
+    // Leere optionale Felder entfernen
+    Object.keys(updates).forEach(k => updates[k] === undefined && delete updates[k]);
+
+    const btn = document.getElementById("fcEditorSave");
+    if (btn) { btn.disabled = true; btn.textContent = "Speichern..."; }
+
+    try {
+        const res = await fetch(`/api/sessions/${currentSessionId}/flashcards/${card.id}`, {
+            method:  "PATCH",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body:    JSON.stringify({ card: updates }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        // Lokalen State aktualisieren
+        Object.assign(card, updates);
+        // fcAllCards aktualisieren
+        const idx = fcAllCards.findIndex(c => c.id === card.id);
+        if (idx >= 0) Object.assign(fcAllCards[idx], updates);
+        overlay.remove();
+        showCard();   // neu rendern
+        showToast("Flashcard aktualisiert ✓", "success");
+    } catch (e) {
+        showToast(`Fehler: ${e.message}`, "error");
+        if (btn) { btn.disabled = false; btn.textContent = "💾 Speichern"; }
+    }
+}
+
+/**
+ * Bestätigt und löscht eine Flashcard.
+ */
+async function confirmDeleteCard(card, overlay) {
+    if (!confirm(`Flashcard "${card.front?.slice(0, 60)}" wirklich löschen?\nDie Lernfortschritte für diese Karte werden ebenfalls entfernt.`)) return;
+
+    try {
+        const res = await fetch(`/api/sessions/${currentSessionId}/flashcards/${card.id}`, {
+            method:  "DELETE",
+            headers: authHeaders(),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        // Lokal entfernen
+        fcAllCards = fcAllCards.filter(c => c.id !== card.id);
+        fcFiltered = fcFiltered.filter(c => c.id !== card.id);
+        // Nächste Karte zeigen oder Section ausblenden
+        if (fcFiltered.length === 0) {
+            overlay.remove();
+            hide(fcResult);
+            showToast("Alle Flashcards gelöscht", "info");
+            return;
+        }
+        fcCurrentIdx = Math.min(fcCurrentIdx, fcFiltered.length - 1);
+        overlay.remove();
+        showCard();
+        showToast("Flashcard gelöscht ✓", "success");
+    } catch (e) {
+        showToast(`Fehler: ${e.message}`, "error");
+    }
+}
+
+/**
+ * Zeigt Dialog zum Hinzufügen einer neuen Flashcard.
+ */
+function openAddCardDialog() {
+    if (!currentSessionId) {
+        showToast("Bitte zuerst eine Session öffnen", "error");
+        return;
+    }
+    if (document.getElementById("fcAddCardOverlay")) return;
+
+    const overlay = document.createElement("div");
+    overlay.id = "fcAddCardOverlay";
+    overlay.className = "fc-editor-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+
+    overlay.innerHTML = `
+        <div class="fc-editor-modal">
+            <h3 class="fc-editor-title">➕ Neue Flashcard</h3>
+            <div class="fc-editor-field">
+                <label for="fcAddFront">Vorderseite *</label>
+                <textarea id="fcAddFront" rows="3" maxlength="500" placeholder="Frage / Begriff..."></textarea>
+            </div>
+            <div class="fc-editor-field">
+                <label for="fcAddBack">Rückseite *</label>
+                <textarea id="fcAddBack" rows="4" maxlength="2000" placeholder="Antwort / Erklärung..."></textarea>
+            </div>
+            <div class="fc-editor-row">
+                <div class="fc-editor-field">
+                    <label for="fcAddTopic">Thema</label>
+                    <input type="text" id="fcAddTopic" maxlength="200" placeholder="z.B. Kapitel 3">
+                </div>
+                <div class="fc-editor-field">
+                    <label for="fcAddHint">Tipp (optional)</label>
+                    <input type="text" id="fcAddHint" maxlength="500" placeholder="Merkhilfe...">
+                </div>
+            </div>
+            <div class="fc-editor-actions">
+                <button class="btn-primary" id="fcAddSaveBtn">➕ Hinzufügen</button>
+                <button class="btn-ghost" id="fcAddCancelBtn">Abbrechen</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+    document.getElementById("fcAddFront")?.focus();
+
+    document.getElementById("fcAddCancelBtn").addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") overlay.remove(); });
+
+    document.getElementById("fcAddSaveBtn").addEventListener("click", async () => {
+        const front = document.getElementById("fcAddFront")?.value.trim();
+        const back  = document.getElementById("fcAddBack")?.value.trim();
+        if (!front || !back) {
+            showToast("Vorder- und Rückseite sind Pflichtfelder", "error");
+            return;
+        }
+        const newCard = {
+            front,
+            back,
+            topic: document.getElementById("fcAddTopic")?.value.trim() || "",
+            hint:  document.getElementById("fcAddHint")?.value.trim()  || "",
+            type:  "basic",
+        };
+        const btn = document.getElementById("fcAddSaveBtn");
+        if (btn) { btn.disabled = true; btn.textContent = "Speichern..."; }
+        try {
+            const res = await fetch(`/api/sessions/${currentSessionId}/flashcards`, {
+                method:  "POST",
+                headers: { "Content-Type": "application/json", ...authHeaders() },
+                body:    JSON.stringify({ card: newCard }),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            newCard.id = data.card_id;
+            // Lokal einfügen
+            fcAllCards.push(newCard);
+            fcFiltered.push(newCard);
+            fcCurrentIdx = fcFiltered.length - 1;
+            overlay.remove();
+            show(fcResult);
+            showCard();
+            showToast("Flashcard hinzugefügt ✓", "success");
+        } catch (e) {
+            showToast(`Fehler: ${e.message}`, "error");
+            if (btn) { btn.disabled = false; btn.textContent = "➕ Hinzufügen"; }
+        }
+    });
+}
+
+// ── Edit-Button in Flashcard-UI ───────────────────────────────────────────────
+// Delegiertes Event-Handling auf fcCard für Edit-Button
+document.getElementById("fcCard")?.addEventListener("click", (e) => {
+    if (e.target.closest("#fcEditBtn")) {
+        e.stopPropagation();
+        openCardEditor();
+    }
+});
+
+// "Karte hinzufügen"-Button in der Flashcard-Liste
+document.getElementById("btnAddFlashcard")?.addEventListener("click", openAddCardDialog);
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 4.3 – Onboarding-Tour (3 Schritte)
+// ══════════════════════════════════════════════════════════════════════════════
+
+const ONBOARDING_KEY = "studyai_onboarded_v1";
+
+const ONBOARDING_STEPS = [
+    {
+        targetId: "uploadSection",
+        title: "📄 Schritt 1: PDF hochladen",
+        text:  "Lade dein Skript, Paper oder Lehrbuch hoch. StudyAI analysiert es mit KI und erstellt Lernmaterialien.",
+        position: "below",
+    },
+    {
+        targetId: "planSection",
+        title: "📅 Schritt 2: Lernplan erstellen",
+        text:  "Gib dein Prüfungsdatum ein – StudyAI erstellt automatisch einen optimierten Lernkalender mit täglichen Zielen.",
+        position: "below",
+    },
+    {
+        targetId: "fcSection",
+        title: "🃏 Schritt 3: Mit KI-Karten lernen",
+        text:  "Lerne mit Flashcards und Spaced Repetition. Das KI-System merkt sich, welche Karten du schwierig findest.",
+        position: "above",
+    },
+];
+
+function startOnboarding() {
+    if (localStorage.getItem(ONBOARDING_KEY)) return;
+    let step = 0;
+
+    function showStep(i) {
+        // Altes Tooltip entfernen
+        document.getElementById("onboardingTooltip")?.remove();
+        if (i >= ONBOARDING_STEPS.length) {
+            finishOnboarding();
+            return;
+        }
+        const s = ONBOARDING_STEPS[i];
+        const target = document.getElementById(s.targetId);
+
+        const tooltip = document.createElement("div");
+        tooltip.id = "onboardingTooltip";
+        tooltip.className = "onboarding-tooltip";
+        tooltip.setAttribute("role", "dialog");
+        tooltip.setAttribute("aria-modal", "false");
+        tooltip.innerHTML = `
+            <div class="onboarding-step-badge">${i + 1} / ${ONBOARDING_STEPS.length}</div>
+            <h4 class="onboarding-title">${s.title}</h4>
+            <p class="onboarding-text">${s.text}</p>
+            <div class="onboarding-actions">
+                ${i < ONBOARDING_STEPS.length - 1
+                    ? `<button class="btn-primary" id="obNext">Weiter →</button>`
+                    : `<button class="btn-primary" id="obFinish">Loslegen 🚀</button>`}
+                <button class="btn-ghost" id="obSkip">Überspringen</button>
+            </div>`;
+
+        document.body.appendChild(tooltip);
+
+        // Positionierung relativ zum Zielelement
+        if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            setTimeout(() => {
+                const rect = target.getBoundingClientRect();
+                const top  = s.position === "above"
+                    ? rect.top + window.scrollY - tooltip.offsetHeight - 12
+                    : rect.bottom + window.scrollY + 12;
+                const left = Math.max(8, Math.min(
+                    rect.left + window.scrollX + rect.width / 2 - tooltip.offsetWidth / 2,
+                    window.innerWidth - tooltip.offsetWidth - 8
+                ));
+                tooltip.style.position = "absolute";
+                tooltip.style.top  = `${top}px`;
+                tooltip.style.left = `${left}px`;
+                // Highlight-Ring um Ziel
+                target.classList.add("onboarding-highlight");
+            }, 400);
+        }
+
+        document.getElementById("obNext")?.addEventListener("click", () => {
+            target?.classList.remove("onboarding-highlight");
+            showStep(i + 1);
+        });
+        document.getElementById("obFinish")?.addEventListener("click", () => {
+            target?.classList.remove("onboarding-highlight");
+            finishOnboarding();
+        });
+        document.getElementById("obSkip")?.addEventListener("click", () => {
+            target?.classList.remove("onboarding-highlight");
+            finishOnboarding();
+        });
+    }
+
+    function finishOnboarding() {
+        document.getElementById("onboardingTooltip")?.remove();
+        document.querySelectorAll(".onboarding-highlight").forEach(el => el.classList.remove("onboarding-highlight"));
+        try { localStorage.setItem(ONBOARDING_KEY, "1"); } catch(e) { /* ignore */ }
+    }
+
+    // Kurze Verzögerung damit die UI fertig geladen ist
+    setTimeout(() => showStep(0), 800);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 4.4 – Analytics Dashboard (Chart.js)
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _analyticsChartReviews = null;
+let _analyticsChartSuccess = null;
+
+/**
+ * Rendert das Analytics-Dashboard mit Chart.js.
+ * Zeigt: Reviews pro Tag (letzte 30 Tage) + Erfolgsquote über Zeit.
+ */
+async function renderAnalytics() {
+    const section = document.getElementById("analyticsSection");
+    if (!section) return;
+
+    // Chart.js nachladen wenn noch nicht vorhanden
+    if (!window.Chart) {
+        await new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js";
+            s.onload = resolve;
+            s.onerror = () => reject(new Error("Chart.js konnte nicht geladen werden"));
+            document.head.appendChild(s);
+        }).catch(e => {
+            console.warn("[Analytics]", e.message);
+            section.innerHTML = `<p class="analytics-empty">Diagramme nicht verfügbar (kein Internetzugang?)</p>`;
+            return;
+        });
+    }
+    if (!window.Chart) return;
+
+    const logs = srReviewLogs ?? [];
+    if (!logs.length) {
+        section.innerHTML = `<p class="analytics-empty">Noch keine Lernaktivität vorhanden.<br>Starte eine Lernsession, um Statistiken zu sehen.</p>`;
+        return;
+    }
+
+    // ── Daten aggregieren ──────────────────────────────────────────────────
+    const byDay = {}; // { "YYYY-MM-DD": { total: number, correct: number } }
+    const today = new Date();
+
+    // Letzte 30 Tage initialisieren
+    for (let i = 29; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        byDay[d.toISOString().slice(0, 10)] = { total: 0, correct: 0 };
+    }
+
+    logs.forEach(log => {
+        const day = (log.created_at ?? log.day ?? "").slice(0, 10);
+        if (day && byDay[day] !== undefined) {
+            byDay[day].total++;
+            if ((log.rating ?? 0) >= 2) byDay[day].correct++;
+        }
+    });
+
+    const labels = Object.keys(byDay).sort();
+    const reviewData  = labels.map(d => byDay[d].total);
+    const successData = labels.map(d =>
+        byDay[d].total > 0 ? Math.round((byDay[d].correct / byDay[d].total) * 100) : null
+    );
+
+    // ── Canvas vorbereiten ──────────────────────────────────────────────────
+    section.innerHTML = `
+        <div class="analytics-grid">
+            <div class="analytics-stat" id="analStatTotal">
+                <span class="analytics-stat-value">–</span>
+                <span class="analytics-stat-label">Reviews gesamt</span>
+            </div>
+            <div class="analytics-stat" id="analStatAvg">
+                <span class="analytics-stat-value">–</span>
+                <span class="analytics-stat-label">Ø pro Tag (30 Tage)</span>
+            </div>
+            <div class="analytics-stat" id="analStatSuccess">
+                <span class="analytics-stat-value">–</span>
+                <span class="analytics-stat-label">Erfolgsquote</span>
+            </div>
+            <div class="analytics-stat" id="analStatStreak">
+                <span class="analytics-stat-value">–</span>
+                <span class="analytics-stat-label">Aktuelle Streak</span>
+            </div>
+        </div>
+        <div class="analytics-chart-wrap">
+            <h4 class="analytics-chart-title">Reviews pro Tag (letzte 30 Tage)</h4>
+            <canvas id="chartReviews" height="100"></canvas>
+        </div>
+        <div class="analytics-chart-wrap">
+            <h4 class="analytics-chart-title">Erfolgsquote % (letzte 30 Tage)</h4>
+            <canvas id="chartSuccess" height="100"></canvas>
+        </div>`;
+
+    // ── Stat-Werte berechnen ────────────────────────────────────────────────
+    const totalReviews = logs.length;
+    const avgPerDay    = labels.length > 0
+        ? (reviewData.reduce((a, b) => a + b, 0) / labels.length).toFixed(1)
+        : 0;
+    const correctAll   = logs.filter(l => (l.rating ?? 0) >= 2).length;
+    const successPct   = totalReviews > 0 ? Math.round((correctAll / totalReviews) * 100) : 0;
+
+    // Streak berechnen
+    let streak = 0;
+    const todayStr = today.toISOString().slice(0, 10);
+    for (let i = 0; i < labels.length; i++) {
+        const checkDay = new Date(today);
+        checkDay.setDate(checkDay.getDate() - i);
+        const dayStr = checkDay.toISOString().slice(0, 10);
+        if (byDay[dayStr]?.total > 0) {
+            streak++;
+        } else {
+            break;
+        }
+    }
+
+    function _setStatVal(id, val) {
+        const el = document.getElementById(id)?.querySelector(".analytics-stat-value");
+        if (el) el.textContent = val;
+    }
+    _setStatVal("analStatTotal",   totalReviews);
+    _setStatVal("analStatAvg",     avgPerDay);
+    _setStatVal("analStatSuccess", `${successPct}%`);
+    _setStatVal("analStatStreak",  `${streak} 🔥`);
+
+    // ── Chart-Optionen ──────────────────────────────────────────────────────
+    const chartDefaults = {
+        responsive: true,
+        animation: { duration: 300 },
+        plugins: {
+            legend: { display: false },
+            tooltip: { mode: "index", intersect: false },
+        },
+        scales: {
+            x: {
+                ticks: {
+                    maxRotation: 45,
+                    callback: (_, i) => labels[i]?.slice(5) ?? "",  // MM-DD
+                    color: "#9ca3af",
+                },
+                grid: { color: "rgba(255,255,255,0.05)" },
+            },
+            y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(255,255,255,0.05)" } },
+        },
+    };
+
+    // ── Reviews-Balkendiagramm ──────────────────────────────────────────────
+    const ctxReviews = document.getElementById("chartReviews")?.getContext("2d");
+    if (ctxReviews) {
+        _analyticsChartReviews?.destroy();
+        _analyticsChartReviews = new window.Chart(ctxReviews, {
+            type: "bar",
+            data: {
+                labels,
+                datasets: [{
+                    label: "Reviews",
+                    data: reviewData,
+                    backgroundColor: "rgba(124, 58, 237, 0.7)",
+                    borderColor: "#7c3aed",
+                    borderWidth: 1,
+                    borderRadius: 3,
+                }],
+            },
+            options: chartDefaults,
+        });
+    }
+
+    // ── Erfolgsquoten-Liniendiagramm ────────────────────────────────────────
+    const ctxSuccess = document.getElementById("chartSuccess")?.getContext("2d");
+    if (ctxSuccess) {
+        _analyticsChartSuccess?.destroy();
+        _analyticsChartSuccess = new window.Chart(ctxSuccess, {
+            type: "line",
+            data: {
+                labels,
+                datasets: [{
+                    label: "Erfolgsquote %",
+                    data: successData,
+                    borderColor: "#10b981",
+                    backgroundColor: "rgba(16, 185, 129, 0.1)",
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointHoverRadius: 5,
+                    spanGaps: true,
+                }],
+            },
+            options: {
+                ...chartDefaults,
+                scales: {
+                    ...chartDefaults.scales,
+                    y: {
+                        ...chartDefaults.scales.y,
+                        min: 0,
+                        max: 100,
+                        ticks: {
+                            ...chartDefaults.scales.y.ticks,
+                            callback: v => `${v}%`,
+                        },
+                    },
+                },
+            },
+        });
+    }
+}
+
+// ── Analytics-Tab-Listener ────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("tabAnalytics")?.addEventListener("click", () => {
+        // Tab-Switching-Logik delegieren
+        document.querySelectorAll(".sr-tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".sr-tab-content").forEach(s => s.classList.add("hidden"));
+        document.getElementById("tabAnalytics")?.classList.add("active");
+        const analyticsSection = document.getElementById("analyticsSection");
+        analyticsSection?.classList.remove("hidden");
+        renderAnalytics();
+    });
+});
+
 
 // ── App starten ───────────────────────────────────────────────────────────────
 (async () => {

@@ -1,0 +1,67 @@
+# ============================================================
+# StudyAI – .dockerignore
+# Prevents secrets, dev artifacts, and large files from being
+# sent to the Docker build context.
+# ============================================================
+
+# --- secrets & credentials ---
+.env
+.env.*
+firebase_credentials.json
+*serviceAccountKey*.json
+*.pem
+*.key
+
+# --- databases (persisted via volume mount at runtime) ---
+*.db
+*.db-wal
+*.db-shm
+studyai.db
+data/
+
+# --- Python cache ---
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# --- virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- logs ---
+*.log
+logs/
+
+# --- version control ---
+.git/
+.gitignore
+
+# --- editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Claude / project tooling ---
+.claude/
+
+# --- test files ---
+test_*.py
+tests/
+
+# --- ML model artifacts (can be large; regenerated at runtime) ---
+*.pkl
+
+# --- Anki export artifacts ---
+*.apkg
+
+# --- Node ---
+node_modules/
+npm-debug.log*

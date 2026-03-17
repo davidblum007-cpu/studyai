@@ -8,7 +8,7 @@
 
 "use strict";
 
-const CACHE_VERSION = "20260309"; // Wird bei Updates manuell oder per Build-Script erhöht
+const CACHE_VERSION = "20260310"; // Wird bei Updates manuell oder per Build-Script erhöht
 const STATIC_CACHE = `studyai-static-${CACHE_VERSION}`;
 const DATA_CACHE   = `studyai-data-${CACHE_VERSION}`;
 
@@ -60,7 +60,22 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Google Fonts & externe CDNs: Network-First mit Cache-Fallback
+  // Kritische Auth-Bibliotheken (Firebase SDK, DOMPurify) NIEMALS cachen –
+  // SW-Caching würde nach Reload opaque/503-Responses liefern und Auth brechen.
+  const PASSTHROUGH_HOSTS = [
+    "www.gstatic.com",          // Firebase SDK
+    "apis.google.com",          // Google Auth APIs
+    "securetoken.googleapis.com",
+    "identitytoolkit.googleapis.com",
+    "accounts.google.com",
+    "cdnjs.cloudflare.com",     // DOMPurify
+  ];
+  if (PASSTHROUGH_HOSTS.some(h => url.hostname === h || url.hostname.endsWith("." + h))) {
+    // Gar nicht intercepten → Browser/OS-Cache + Netzwerk entscheidet
+    return;
+  }
+
+  // Google Fonts & weitere externe CDNs: Network-First mit Cache-Fallback
   if (url.origin !== self.location.origin) {
     e.respondWith(networkFirstExternal(request));
     return;
