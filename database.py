@@ -152,6 +152,29 @@ class Database:
 
             CREATE INDEX IF NOT EXISTS idx_chat_session_id  ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_chat_created_at  ON chat_messages(session_id, created_at);
+
+            -- ── Phase 6: Deck-Sharing ──────────────────────────────────────────
+            CREATE TABLE IF NOT EXISTS shared_decks (
+                token       TEXT    PRIMARY KEY,
+                session_id  TEXT    NOT NULL,
+                uid         TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL,
+                expires_at  TEXT,
+                view_count  INTEGER DEFAULT 0,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_shared_decks_session ON shared_decks(session_id);
+            CREATE INDEX IF NOT EXISTS idx_shared_decks_uid     ON shared_decks(uid);
+
+            -- ── Phase 6: Badges / Achievements ────────────────────────────────
+            CREATE TABLE IF NOT EXISTS user_badges (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid         TEXT    NOT NULL,
+                badge_key   TEXT    NOT NULL,
+                earned_at   TEXT    NOT NULL,
+                UNIQUE(uid, badge_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_badges_uid ON user_badges(uid);
         """)
         conn.commit()
         # Migration: user_id-Spalte zu bestehenden Datenbanken hinzufügen
@@ -628,3 +651,226 @@ class Database:
         )
         conn.commit()
         return cur.rowcount
+
+    # ── Phase 6: Deck-Sharing ──────────────────────────────────────────────────
+
+    def create_share_token(self, session_id: str, uid: str, expires_days: int = 30) -> str:
+        """Erstellt einen öffentlichen Share-Token für ein Flashcard-Deck."""
+        import secrets
+        from datetime import timedelta
+        token = secrets.token_urlsafe(12)
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(days=expires_days)).isoformat()
+        conn = self._get_conn()
+        # Alten Token für dieselbe Session löschen
+        conn.execute("DELETE FROM shared_decks WHERE session_id = ? AND uid = ?",
+                     (session_id, uid))
+        conn.execute("""
+            INSERT INTO shared_decks (token, session_id, uid, created_at, expires_at, view_count)
+            VALUES (?, ?, ?, ?, ?, 0)
+        """, (token, session_id, uid, now.isoformat(), expires))
+        conn.commit()
+        return token
+
+    def get_share_token(self, session_id: str, uid: str) -> Optional[Dict]:
+        """Gibt den aktiven Share-Token einer Session zurück (oder None)."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM shared_decks WHERE session_id = ? AND uid = ?",
+            (session_id, uid)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_shared_deck(self, token: str) -> Optional[Dict]:
+        """Lädt ein geteiltes Deck per Token. Erhöht View-Count. Prüft Ablauf."""
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT * FROM shared_decks WHERE token = ?", (token,)
+        ).fetchone()
+        if not row:
+            return None
+        # Ablauf prüfen
+        if row["expires_at"]:
+            try:
+                exp = datetime.fromisoformat(row["expires_at"])
+                if exp < datetime.now(timezone.utc):
+                    return None  # Abgelaufen
+            except Exception:
+                pass
+        # View-Count erhöhen
+        conn.execute("UPDATE shared_decks SET view_count = view_count + 1 WHERE token = ?",
+                     (token,))
+        conn.commit()
+        return dict(row)
+
+    def delete_share_token(self, session_id: str, uid: str) -> bool:
+        """Widerruft den Share-Token einer Session."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            "DELETE FROM shared_decks WHERE session_id = ? AND uid = ?",
+            (session_id, uid)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    # ── Phase 6: Gamification – Streak ────────────────────────────────────────
+
+    def get_streak(self, uid: str) -> int:
+        """Berechnet die aktuelle Lernstreak in Tagen (aufeinanderfolgende Tage mit Reviews)."""
+        from datetime import date, timedelta
+        conn = self._get_conn()
+        rows = conn.execute("""
+            SELECT DISTINCT date(r.created_at) AS day
+            FROM   sr_review_logs r
+            JOIN   sessions s ON r.session_id = s.id
+            WHERE  s.user_id = ?
+            ORDER  BY day DESC
+            LIMIT  365
+        """, (uid,)).fetchall()
+        if not rows:
+            return 0
+        streak = 0
+        today  = date.today()
+        for i, row in enumerate(rows):
+            expected = today - timedelta(days=i)
+            if row["day"] == str(expected):
+                streak += 1
+            else:
+                break
+        return streak
+
+    def get_total_reviews(self, uid: str) -> int:
+        """Gibt die Gesamtzahl abgeschlossener Reviews zurück."""
+        conn = self._get_conn()
+        row = conn.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM   sr_review_logs r
+            JOIN   sessions s ON r.session_id = s.id
+            WHERE  s.user_id = ?
+        """, (uid,)).fetchone()
+        return row["cnt"] if row else 0
+
+    def get_total_cards(self, uid: str) -> int:
+        """Gibt die Gesamtzahl erstellter Flashcards zurück."""
+        conn = self._get_conn()
+        row = conn.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM   flashcards f
+            JOIN   sessions s ON f.session_id = s.id
+            WHERE  s.user_id = ?
+        """, (uid,)).fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Phase 6: Badges ───────────────────────────────────────────────────────
+
+    # Badge-Definitionen: key → (label, icon, description, condition_fn(stats))
+    BADGES = {
+        "first_review":    ("Erste Review",      "🎯", "Erste Lernkarte bewertet",       lambda s: s["total_reviews"] >= 1),
+        "streak_3":        ("3-Tage-Streak",      "🔥", "3 Tage in Folge gelernt",        lambda s: s["streak"] >= 3),
+        "streak_7":        ("Wochenchampion",     "🏆", "7 Tage in Folge gelernt",        lambda s: s["streak"] >= 7),
+        "streak_30":       ("Monatsmarathon",     "💪", "30 Tage in Folge gelernt",       lambda s: s["streak"] >= 30),
+        "cards_10":        ("Kartensammler",      "📚", "10 Karten erstellt",             lambda s: s["total_cards"] >= 10),
+        "cards_100":       ("Kartenproffi",       "🃏", "100 Karten erstellt",            lambda s: s["total_cards"] >= 100),
+        "reviews_50":      ("Fleißig",            "⚡", "50 Reviews abgeschlossen",       lambda s: s["total_reviews"] >= 50),
+        "reviews_500":     ("Ausdauer",           "🚀", "500 Reviews abgeschlossen",      lambda s: s["total_reviews"] >= 500),
+        "first_share":     ("Teilen ist Lernen",  "🔗", "Erstes Deck geteilt",            lambda s: s.get("shared", 0) >= 1),
+    }
+
+    def check_and_award_badges(self, uid: str) -> List[Dict]:
+        """Prüft alle Badge-Bedingungen und vergibt neue Badges. Gibt neue Badges zurück."""
+        stats = {
+            "streak":        self.get_streak(uid),
+            "total_reviews": self.get_total_reviews(uid),
+            "total_cards":   self.get_total_cards(uid),
+            "shared":        self._get_share_count(uid),
+        }
+        conn = self._get_conn()
+        existing = {r["badge_key"] for r in conn.execute(
+            "SELECT badge_key FROM user_badges WHERE uid = ?", (uid,)
+        ).fetchall()}
+
+        new_badges = []
+        now = datetime.now(timezone.utc).isoformat()
+        for key, (label, icon, desc, condition) in self.BADGES.items():
+            if key not in existing and condition(stats):
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO user_badges (uid, badge_key, earned_at) VALUES (?, ?, ?)",
+                        (uid, key, now)
+                    )
+                    new_badges.append({"key": key, "label": label, "icon": icon, "description": desc})
+                except Exception:
+                    pass
+        conn.commit()
+        return new_badges
+
+    def get_user_badges(self, uid: str) -> List[Dict]:
+        """Gibt alle Badges eines Users zurück."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT badge_key, earned_at FROM user_badges WHERE uid = ? ORDER BY earned_at ASC",
+            (uid,)
+        ).fetchall()
+        result = []
+        for row in rows:
+            key = row["badge_key"]
+            meta = self.BADGES.get(key, (key, "🏅", "", lambda _: True))
+            result.append({
+                "key":         key,
+                "label":       meta[0],
+                "icon":        meta[1],
+                "description": meta[2],
+                "earned_at":   row["earned_at"],
+            })
+        return result
+
+    def _get_share_count(self, uid: str) -> int:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM shared_decks WHERE uid = ?", (uid,)
+        ).fetchone()
+        return row["cnt"] if row else 0
+
+    # ── Phase 6: Admin-Stats ───────────────────────────────────────────────────
+
+    def get_admin_stats(self) -> Dict:
+        """Gibt aggregierte Plattform-Statistiken zurück (nur für Admins)."""
+        conn = self._get_conn()
+        stats = {}
+        # User-Zähler
+        stats["total_sessions"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM sessions"
+        ).fetchone() or {}).get("c", 0)
+        stats["unique_users"] = (conn.execute(
+            "SELECT COUNT(DISTINCT user_id) AS c FROM sessions WHERE user_id != 'local'"
+        ).fetchone() or {}).get("c", 0)
+        stats["total_flashcards"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM flashcards"
+        ).fetchone() or {}).get("c", 0)
+        stats["total_reviews"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM sr_review_logs"
+        ).fetchone() or {}).get("c", 0)
+        stats["total_chat_messages"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM chat_messages"
+        ).fetchone() or {}).get("c", 0)
+        stats["shared_decks_active"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM shared_decks"
+        ).fetchone() or {}).get("c", 0)
+        # Pro-User
+        stats["pro_users"] = (conn.execute(
+            "SELECT COUNT(*) AS c FROM users WHERE tier = 'pro' AND sub_status = 'active'"
+        ).fetchone() or {}).get("c", 0)
+        # Aktivste Sessions der letzten 7 Tage
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        stats["active_sessions_7d"] = (conn.execute(
+            "SELECT COUNT(DISTINCT session_id) AS c FROM sr_review_logs WHERE created_at >= ?",
+            (since,)
+        ).fetchone() or {}).get("c", 0)
+        # API-Token-Verbrauch gesamt
+        row = conn.execute(
+            "SELECT SUM(input_tokens) AS inp, SUM(output_tokens) AS out FROM token_logs"
+        ).fetchone()
+        stats["total_tokens_in"]  = row["inp"] or 0 if row else 0
+        stats["total_tokens_out"] = row["out"] or 0 if row else 0
+        return stats
