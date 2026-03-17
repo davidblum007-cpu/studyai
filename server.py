@@ -72,6 +72,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 import re
 import zipfile
@@ -190,7 +191,7 @@ def add_security_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         # Scripts: eigene Dateien + Firebase SDK + Chart.js + DOMPurify + Mermaid
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+        "script-src 'self' 'unsafe-inline' "
             "www.gstatic.com cdn.jsdelivr.net cdnjs.cloudflare.com "
             "browser.sentry-cdn.com; "
         # Verbindungen: Firebase Auth, Firestore, Sentry, Anthropic (via Server-Proxy)
@@ -222,6 +223,9 @@ chat_agent     = ChatAgent()
 improve_agent  = ImproveCardAgent()
 firebase       = FirebaseSync()
 sec_mgr        = SecurityManager(db_path=db.db_path)
+
+# Thread-Pool für SSE-Worker-Threads (verhindert unbegrenzte Thread-Erzeugung unter Last)
+_thread_pool = ThreadPoolExecutor(max_workers=4)
 sec_mgr.init_app(app)
 
 
@@ -550,12 +554,11 @@ def analyze():
 
                     progress_queue.put(("result", result))
                 except Exception as e:
-                    progress_queue.put(("error", {"message": str(e)}))
+                    progress_queue.put(("error", {"message": "Ein interner Fehler ist aufgetreten."}))
                 finally:
                     done_event.set()
 
-            thread = threading.Thread(target=run_analysis, daemon=True)
-            thread.start()
+            _future_analysis = _thread_pool.submit(run_analysis)
 
             # Fortschritt streamen
             while not done_event.is_set() or not progress_queue.empty():
@@ -568,13 +571,16 @@ def analyze():
                     # Heartbeat senden damit die Verbindung offen bleibt
                     yield ": heartbeat\n\n"
 
-            thread.join(timeout=300)
+            try:
+                _future_analysis.result(timeout=5)  # kurzes cleanup-wait
+            except Exception:
+                pass
 
         except SecurityError as e:
             yield send_event("error", {"message": f"Sicherheitsfehler: {e}"})
         except Exception as e:
             logger.exception("Unerwarteter Fehler in /api/analyze")
-            yield send_event("error", {"message": f"Interner Fehler: {e}"})
+            yield send_event("error", {"message": "Ein interner Fehler ist aufgetreten."})
 
     return Response(
         stream_with_context(generate()),
@@ -620,10 +626,10 @@ def plan():
         result = planner.create_plan(alle_themen, pruefungsdatum, stunden_pro_tag)
         return jsonify(result)
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 400
     except Exception as e:
         logger.exception("Fehler in /api/plan")
-        return jsonify({"error": f"Interner Fehler: {e}"}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/flashcards", methods=["POST"])
@@ -669,11 +675,11 @@ def flashcards():
                 result = flashcarder.generate_for_all_chunks(chunks, progress_callback=cb)
                 q.put(("result", result))
             except Exception as e:
-                q.put(("error", {"message": str(e)}))
+                q.put(("error", {"message": "Ein interner Fehler ist aufgetreten."}))
             finally:
                 done.set()
 
-        threading.Thread(target=run, daemon=True).start()
+        _thread_pool.submit(run)
 
         while not done.is_set() or not q.empty():
             try:
@@ -722,7 +728,7 @@ def sr_rate():
         })
     except Exception as e:
         logger.exception("Fehler in /api/sr/rate")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sr/due", methods=["POST"])
@@ -770,7 +776,7 @@ def sr_train():
         return jsonify({"success": True, "trained_samples": len(validated_logs)})
     except Exception as e:
         logger.exception("Fehler beim Modell-Training")
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 400
 
 
 @app.route("/api/export/anki", methods=["POST"])
@@ -831,7 +837,7 @@ def export_anki():
             buf = io.BytesIO(f.read())
     except Exception as e:
         logger.exception("Fehler beim Anki-Export")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
     finally:
         try:
             os.unlink(tmp_path)
@@ -858,7 +864,7 @@ def create_session():
         return jsonify({"session_id": session_id})
     except Exception as e:
         logger.exception("Fehler beim Erstellen der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions", methods=["GET"])
@@ -877,7 +883,7 @@ def list_sessions():
         return jsonify({"sessions": sessions})
     except Exception as e:
         logger.exception("Fehler beim Laden der Sessions")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>", methods=["GET"])
@@ -893,7 +899,7 @@ def load_session(session_id):
         return jsonify(data)
     except Exception as e:
         logger.exception("Fehler beim Laden der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>", methods=["PATCH"])
@@ -913,7 +919,7 @@ def rename_session(session_id):
         return jsonify({"success": True})
     except Exception as e:
         logger.exception("Fehler beim Umbenennen der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>", methods=["DELETE"])
@@ -930,7 +936,7 @@ def delete_session(session_id):
         return jsonify({"success": True})
     except Exception as e:
         logger.exception("Fehler beim Löschen der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>/save", methods=["POST"])
@@ -952,7 +958,7 @@ def save_session(session_id):
         return jsonify({"success": True})
     except Exception as e:
         logger.exception("Fehler beim Speichern der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>/export", methods=["GET"])
@@ -976,7 +982,7 @@ def export_session(session_id):
                          mimetype="application/json")
     except Exception as e:
         logger.exception("Fehler beim Exportieren der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/import", methods=["POST"])
@@ -1004,7 +1010,7 @@ def import_session():
         return jsonify({"session_id": session_id, "name": f"{name} (Import)"})
     except Exception as e:
         logger.exception("Fehler beim Importieren der Session")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 # ── Security Audit ────────────────────────────────────────────────────────────
@@ -1059,7 +1065,7 @@ def delete_user_account():
         return jsonify({"success": True, "deleted": result})
     except Exception as e:
         logger.exception("[GDPR] Fehler bei Account-Löschung für %s", user.get("uid", "?"))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/user/export", methods=["POST"])
@@ -1091,7 +1097,7 @@ def export_user_data():
         )
     except Exception as e:
         logger.exception("[GDPR] Fehler beim Datenexport für %s", user.get("uid", "?"))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 # ── Billing / Monetarisierung ─────────────────────────────────────────────────
@@ -1150,7 +1156,7 @@ def billing_checkout():
         return jsonify({"checkout_url": url})
     except Exception as e:
         logger.exception("[Billing] Checkout-Fehler für %s", user.get("uid", "?"))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/billing/portal", methods=["POST"])
@@ -1168,10 +1174,10 @@ def billing_portal():
         url = create_portal_session(user["uid"], return_url=f"{base}/")
         return jsonify({"portal_url": url})
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 400
     except Exception as e:
         logger.exception("[Billing] Portal-Fehler für %s", user.get("uid", "?"))
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/webhooks/stripe", methods=["POST"])
@@ -1189,7 +1195,7 @@ def stripe_webhook():
         return ("", 200) if ok else ("", 400)
     except Exception as e:
         logger.exception("[Billing] Webhook-Fehler")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 # ── Flashcard CRUD (Phase 4) ───────────────────────────────────────────────────
@@ -1234,7 +1240,7 @@ def add_flashcard(session_id):
         return jsonify({"success": True, "card_id": card_id})
     except Exception as e:
         logger.exception("[Flashcard] Fehler beim Hinzufügen")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["PATCH"])
@@ -1272,10 +1278,10 @@ def update_flashcard(session_id, card_id):
         db.update_flashcard(session_id, card_id, safe_update)
         return jsonify({"success": True})
     except ValueError as e:
-        return jsonify({"error": str(e)}), 404
+        return jsonify({"error": "Ressource nicht gefunden."}), 404
     except Exception as e:
         logger.exception("[Flashcard] Fehler beim Aktualisieren")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["DELETE"])
@@ -1294,7 +1300,7 @@ def delete_flashcard(session_id, card_id):
         return jsonify({"success": True})
     except Exception as e:
         logger.exception("[Flashcard] Fehler beim Löschen")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 @app.route("/api/sessions/<session_id>/flashcards/<card_id>", methods=["GET"])
@@ -1356,10 +1362,9 @@ def generate_quiz():
             q.put(("result", {"questions": questions, "total": len(questions)}))
         except Exception as exc:
             logger.exception("Fehler beim Quiz-Generieren")
-            q.put(("error", {"message": str(exc)}))
+            q.put(("error", {"message": "Ein interner Fehler ist aufgetreten."}))
 
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    _thread_pool.submit(worker)
 
     def generate():
         while True:
@@ -1453,9 +1458,9 @@ def chat_with_tutor(session_id: str):
             q.put(("done", {"message_id": msg_id, "length": len(full_answer)}))
         except Exception as exc:
             logger.exception("[Chat] Fehler bei Tutor-Antwort")
-            q.put(("error", {"message": str(exc)}))
+            q.put(("error", {"message": "Ein interner Fehler ist aufgetreten."}))
 
-    threading.Thread(target=worker, daemon=True).start()
+    _thread_pool.submit(worker)
 
     def generate():
         while True:
@@ -1770,14 +1775,17 @@ def notifications_send_reminders():
         return jsonify({"success": True, "stats": stats})
     except Exception as exc:
         logger.exception("Fehler beim Senden der Erinnerungen")
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # GDPR Art. 5: Veraltete Daten im Hintergrund aufräumen
+    # GDPR Art. 5: Veraltete Daten + Audit-Logs im Hintergrund aufräumen
     threading.Thread(
         target=lambda: db.purge_inactive_data(months=24), daemon=True
+    ).start()
+    threading.Thread(
+        target=lambda: sec_mgr.purge_old_audit_logs(days=90), daemon=True
     ).start()
     port = int(os.getenv("FLASK_PORT", 5000))
     debug = os.getenv("FLASK_ENV", "development") == "development"

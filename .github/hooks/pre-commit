@@ -17,10 +17,12 @@ PATTERNS=(
 
 BLOCKED=0
 for pattern in "${PATTERNS[@]}"; do
-  # Search staged files (exclude .env.example and docs)
+  # Search staged files (exclude config/example/docs files to avoid false positives)
   MATCHES=$(git diff --cached --name-only | \
     grep -v ".env.example" | \
     grep -v "\.md$" | \
+    grep -v "\.toml$" | \
+    grep -v "docker-compose\.yml$" | \
     xargs grep -l "$pattern" 2>/dev/null)
   if [ -n "$MATCHES" ]; then
     echo "${RED}🚫 SECRET DETECTED in staged files: $pattern${NC}"

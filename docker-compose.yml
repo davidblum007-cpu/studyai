@@ -38,6 +38,11 @@ services:
       - STUDYAI_DB=/app/data/studyai.db
       # Redis URL for rate-limiting
       - REDIS_URL=redis://redis:6379/0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ----------------------------------------------------------
   # redis – in-memory store (rate-limiting, caching)
@@ -54,6 +59,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ----------------------------------------------------------
   # nginx – reverse proxy, SSL termination, static caching
@@ -72,6 +82,11 @@ services:
       # - ./ssl/privkey.pem:/etc/nginx/ssl/privkey.pem:ro
     depends_on:
       - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ----------------------------------------------------------
 # named volumes

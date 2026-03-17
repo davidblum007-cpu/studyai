@@ -98,9 +98,32 @@ class ChatAgent:
                     parts.append(f"F: {front}\nA: {back}")
 
         context = "\n".join(parts)
-        # Kürzen wenn zu lang
+        # Kürzen wenn zu lang – an Absatz- oder Satzgrenze, nicht mitten im Text
         if len(context) > self.MAX_CONTEXT_CHARS:
-            context = context[:self.MAX_CONTEXT_CHARS] + "\n\n[...Material gekürzt...]"
+            original_len = len(context)
+            truncated = context[:self.MAX_CONTEXT_CHARS]
+            # Versuch 1: An letztem doppelten Zeilenumbruch (Absatzgrenze) trennen
+            last_para = truncated.rfind("\n\n")
+            # Versuch 2: An letztem einfachen Zeilenumbruch trennen
+            last_line = truncated.rfind("\n")
+            # Versuch 3: An letztem Satzende trennen (. ! ?)
+            last_sent = max(
+                truncated.rfind(". "),
+                truncated.rfind("! "),
+                truncated.rfind("? "),
+            )
+            # Beste Trennstelle wählen (mindestens 80% des Limits nutzen)
+            min_pos = self.MAX_CONTEXT_CHARS * 8 // 10
+            cut_pos = self.MAX_CONTEXT_CHARS  # Fallback: harte Grenze
+            for pos in [last_para, last_line, last_sent]:
+                if pos > min_pos:
+                    cut_pos = pos
+                    break
+            context = context[:cut_pos] + "\n\n[...Material gekürzt...]"
+            logger.warning(
+                "[%s] Kontext gekürzt von %d auf %d Zeichen (Trennstelle: %d)",
+                self.name, original_len, len(context), cut_pos
+            )
 
         return context
 

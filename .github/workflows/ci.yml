@@ -51,6 +51,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # optional for public repos
 
+      - name: Verify pre-commit hook exists
+        run: |
+          if [ -f ".github/hooks/pre-commit" ]; then
+            echo "OK: .github/hooks/pre-commit vorhanden"
+          else
+            echo "MISSING: .github/hooks/pre-commit fehlt!"
+            exit 1
+          fi
+          if [ -f ".gitleaks.toml" ]; then
+            echo "OK: .gitleaks.toml vorhanden"
+          else
+            echo "MISSING: .gitleaks.toml fehlt!"
+            exit 1
+          fi
+
   # ── Job 2: Unit Tests ────────────────────────────────────────────────────
   test:
     name: Tests (pytest)

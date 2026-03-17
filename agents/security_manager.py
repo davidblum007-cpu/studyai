@@ -267,6 +267,30 @@ class SecurityManager:
         except Exception as e:
             logger.error("[SecurityManager] Auth-Log fehlgeschlagen: %s", e)
 
+    def purge_old_audit_logs(self, days: int = 90) -> int:
+        """
+        GDPR Art. 5 – Löscht Audit-Log-Einträge die älter als X Tage sind.
+        Wird beim App-Start aufgerufen um die DB-Größe zu begrenzen.
+
+        Returns: Anzahl gelöschter Einträge
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                result = conn.execute(
+                    "DELETE FROM security_audit_log "
+                    "WHERE datetime(timestamp) < datetime('now', ?)",
+                    (f"-{days} days",)
+                )
+                deleted = result.rowcount
+                conn.commit()
+            if deleted > 0:
+                logger.info("[SecurityManager] Purge: %d Audit-Logs älter als %d Tage gelöscht",
+                            deleted, days)
+            return deleted
+        except Exception as e:
+            logger.error("[SecurityManager] Purge fehlgeschlagen: %s", e)
+            return 0
+
     def unblock_ip(self, ip: str):
         self._blocked_ips.discard(ip)
         self._ip_log[ip].clear()
