@@ -4609,7 +4609,128 @@ window.loadUserProfile = async function() {
     await loadGamificationStats();
     // Badge-Check nach Login (neue Badges seit letztem Besuch?)
     await _checkBadges();
+    // Phase 7: Notification-Status laden
+    await _loadNotificationStatus();
 };
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── PHASE 7 – Push-Notifications ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _vapidPublicKey = null;
+
+/** Konvertiert Base64URL-String zu Uint8Array für PushManager.subscribe() */
+function _urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat((4 - base64String.length % 4) % 4);
+    const base64  = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw     = atob(base64);
+    return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+/** Lädt den VAPID-Key vom Server und aktualisiert den Notification-Button */
+async function _loadNotificationStatus() {
+    const btn  = document.getElementById("btnToggleNotifications");
+    const icon = document.getElementById("notifToggleIcon");
+    if (!btn || !icon) return;
+
+    // Browser-Support prüfen
+    if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+        btn.disabled = true;
+        icon.textContent = "N/A";
+        btn.title = "Dein Browser unterstützt keine Push-Benachrichtigungen";
+        return;
+    }
+
+    try {
+        const res  = await fetch("/api/notifications/vapid-public-key");
+        const data = await res.json();
+        if (!data.push_enabled) {
+            btn.disabled = true;
+            icon.textContent = "—";
+            btn.title = "Push-Benachrichtigungen sind nicht konfiguriert";
+            return;
+        }
+        _vapidPublicKey = data.vapid_public_key;
+
+        // Aktuelle Browser-Subscription prüfen
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        _updateNotifButton(sub !== null);
+    } catch (err) {
+        console.warn("[Push] Status konnte nicht geladen werden:", err);
+    }
+}
+
+/** Aktualisiert Aussehen des Notification-Buttons */
+function _updateNotifButton(subscribed) {
+    const btn  = document.getElementById("btnToggleNotifications");
+    const icon = document.getElementById("notifToggleIcon");
+    if (!btn || !icon) return;
+    if (subscribed) {
+        icon.textContent = "AN";
+        btn.classList.add("notif-active");
+        btn.title = "Benachrichtigungen deaktivieren";
+    } else {
+        icon.textContent = "AUS";
+        btn.classList.remove("notif-active");
+        btn.title = "Benachrichtigungen aktivieren";
+    }
+}
+
+/** Abonniert oder kündigt Push-Notifications */
+async function toggleNotifications() {
+    if (!_vapidPublicKey) {
+        showToast("Push-Benachrichtigungen nicht verfügbar", "error");
+        return;
+    }
+    if (Notification.permission === "denied") {
+        showToast("Benachrichtigungen sind im Browser blockiert. Bitte in den Seiteneinstellungen freigeben.", "error");
+        return;
+    }
+
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+
+        if (sub) {
+            // Abmelden
+            await sub.unsubscribe();
+            await fetch("/api/notifications/unsubscribe", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body:    JSON.stringify({ endpoint: sub.endpoint }),
+            });
+            _updateNotifButton(false);
+            showToast("Lern-Erinnerungen deaktiviert", "info");
+        } else {
+            // Abonnieren – Browser fragt nach Permission
+            const newSub = await reg.pushManager.subscribe({
+                userVisibleOnly:      true,
+                applicationServerKey: _urlBase64ToUint8Array(_vapidPublicKey),
+            });
+            const subJson = newSub.toJSON();
+            await fetch("/api/notifications/subscribe", {
+                method:  "POST",
+                headers: { "Content-Type": "application/json" },
+                body:    JSON.stringify({
+                    endpoint: subJson.endpoint,
+                    keys:     subJson.keys,
+                }),
+            });
+            _updateNotifButton(true);
+            showToast("Lern-Erinnerungen aktiviert! Du wirst benachrichtigt wenn Karten fällig sind.", "success");
+        }
+    } catch (err) {
+        console.error("[Push] Toggle-Fehler:", err);
+        showToast("Fehler beim Ändern der Benachrichtigungs-Einstellung", "error");
+    }
+}
+
+// Event-Listener für Notification-Button
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btnToggleNotifications")?.addEventListener("click", toggleNotifications);
+});
 
 
 // ── App starten ───────────────────────────────────────────────────────────────

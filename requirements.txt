@@ -40,3 +40,8 @@ redis>=5.0.0
 # ── Sentry Error-Tracking (Phase 3, optional) ─────────────────────────────────
 # Aktivieren: SENTRY_DSN=https://xxx@sentry.io/yyy in .env setzen
 sentry-sdk[flask]>=2.0.0
+
+# ── Phase 7: Push-Notifications ───────────────────────────────────────────────
+# Web-Push-Benachrichtigungen via VAPID (RFC 8292)
+# Keys generieren: python agents/notification_agent.py --generate-keys
+pywebpush>=2.0.0
