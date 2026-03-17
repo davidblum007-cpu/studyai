@@ -43,7 +43,7 @@
     <div class="nav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">StudyAI</span>
-      <span class="brand-badge">Phase 1–4</span>
+      <span class="brand-badge">Phase 1–5</span>
     </div>
     <div class="nav-right">
       <div class="nav-status" id="navStatus">
@@ -72,6 +72,14 @@
             <div class="usage-bar-wrap">
               <div class="usage-bar-fill" id="usageAnalysesFill" style="width:0%"></div>
             </div>
+          </div>
+
+              <!-- Gamification: Streak + Badges -->
+          <div class="user-streak-row" id="userStreakRow">
+            <span class="user-streak-icon">🔥</span>
+            <span id="userStreakValue">0</span>
+            <span class="user-streak-label">Tage Streak</span>
+            <button class="user-badges-btn" id="btnShowBadges" title="Badges anzeigen">🏅 Badges</button>
           </div>
 
           <hr class="user-menu-divider" />
@@ -502,6 +510,8 @@
           <div class="fc-actions">
             <button class="btn-ghost" id="btnFcDownload">⬇️ Anki-Export</button>
             <button class="btn-ghost" id="btnFcShuffle">🔀 Mischen</button>
+            <button class="btn-ghost btn-share-deck" id="btnShareDeck" title="Deck öffentlich teilen">🔗 Teilen</button>
+            <button class="btn-ghost btn-open-chat" id="btnOpenChat" title="KI-Tutor-Chat öffnen">💬 KI-Tutor</button>
           </div>
         </div>
 
@@ -563,10 +573,13 @@
             <button class="fc-nav-btn" id="btnFcNext">→</button>
           </div>
 
-          <!-- Karten-Aktionen: Bearbeiten -->
+          <!-- Karten-Aktionen: Bearbeiten + KI-Verbessern -->
           <div class="fc-card-actions">
             <button class="fc-action-btn" id="fcEditBtn" title="Karte bearbeiten (E)">
               ✏️ Bearbeiten
+            </button>
+            <button class="fc-action-btn fc-action-improve" id="fcImproveBtn" title="Karte mit KI verbessern">
+              🤖 KI verbessern
             </button>
           </div>
         </div>
@@ -781,11 +794,101 @@
 
     </section>
 
+    <!-- ── Phase 5: Chat-Tutor ────────────────────────────────────────────── -->
+    <section id="chatSection" class="chat-section hidden">
+      <div class="phase-divider">
+        <span class="phase-label">💬 Phase 5 – KI-Tutor-Chat</span>
+        <span class="ml-badge">✨ Powered by Claude</span>
+      </div>
+
+      <!-- Chat-Fenster -->
+      <div class="chat-window" id="chatWindow">
+        <!-- Nachrichten werden per JS eingefügt -->
+        <div class="chat-welcome" id="chatWelcome">
+          <div class="chat-welcome-icon">🤖</div>
+          <h3>Hallo! Ich bin dein KI-Tutor.</h3>
+          <p>Ich habe dein Lernmaterial analysiert und beantworte gerne deine Fragen dazu. Was möchtest du wissen?</p>
+          <div class="chat-suggestions" id="chatSuggestions">
+            <!-- Vorschläge werden per JS eingefügt -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Eingabe -->
+      <div class="chat-input-row">
+        <textarea id="chatInput" class="chat-input"
+                  placeholder="Stelle eine Frage zu deinem Lernmaterial…"
+                  rows="1" maxlength="2000"></textarea>
+        <button id="btnChatSend" class="btn-chat-send" title="Senden (Enter)">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Toolbar -->
+      <div class="chat-toolbar">
+        <span class="chat-char-count" id="chatCharCount">0 / 2000</span>
+        <button id="btnChatClear" class="btn-chat-clear" title="Chat-Verlauf löschen">
+          🗑️ Verlauf löschen
+        </button>
+      </div>
+    </section>
+
   </main>
+
+  <!-- ── Phase 6: Share-Modal ───────────────────────────────────────────────── -->
+  <div id="shareModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
+    <div class="modal-card share-modal-card">
+      <div class="share-modal-header">
+        <h3 id="shareModalTitle">🔗 Deck teilen</h3>
+        <button class="modal-close-btn" id="btnShareModalClose" aria-label="Schließen">✕</button>
+      </div>
+      <p class="share-modal-desc">Teile dein Flashcard-Deck mit anderen. Der Link ist 30 Tage gültig und benötigt kein Login.</p>
+      <div class="share-url-row" id="shareUrlRow">
+        <input type="text" id="shareUrlInput" class="share-url-input" readonly placeholder="Link wird generiert…" />
+        <button class="btn-copy-share" id="btnCopyShareUrl" title="Kopieren">📋</button>
+      </div>
+      <div class="share-meta" id="shareMeta"></div>
+      <div class="share-modal-actions">
+        <button class="btn-primary" id="btnCreateShare">🔗 Link erstellen / erneuern</button>
+        <button class="btn-danger" id="btnRevokeShare">🗑️ Link widerrufen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Phase 6: Badges-Modal ─────────────────────────────────────────────── -->
+  <div id="badgesModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="badgesModalTitle">
+    <div class="modal-card badges-modal-card">
+      <div class="badges-modal-header">
+        <h3 id="badgesModalTitle">🏅 Deine Badges</h3>
+        <button class="modal-close-btn" id="btnBadgesModalClose" aria-label="Schließen">✕</button>
+      </div>
+      <div id="badgesGrid" class="badges-grid">
+        <!-- Wird per JS befüllt -->
+      </div>
+      <div id="badgesEmpty" class="badges-empty hidden">
+        <p>Noch keine Badges verdient. Fang mit dem Lernen an! 🚀</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Phase 6: Shared Deck View Modal ───────────────────────────────────── -->
+  <div id="sharedDeckModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="sharedDeckTitle">
+    <div class="modal-card shared-deck-card">
+      <div class="shared-deck-header">
+        <h3 id="sharedDeckTitle">📚 Geteiltes Deck</h3>
+        <button class="modal-close-btn" id="btnSharedDeckClose" aria-label="Schließen">✕</button>
+      </div>
+      <div id="sharedDeckContent" class="shared-deck-content">
+        <!-- Wird per JS befüllt -->
+      </div>
+    </div>
+  </div>
 
   <!-- ── Footer ────────────────────────────────────────────────── -->
   <footer class="footer">
-    <p>StudyAI · Phase 1 + 2 + 3 + 4 · Powered by <strong id="footerModel">Claude API</strong></p>
+    <p>StudyAI · Phase 1–6 · Powered by <strong id="footerModel">Claude API</strong></p>
   </footer>
 
   <!-- ── Keyboard Hint ──────────────────────────────────────────────────────── -->

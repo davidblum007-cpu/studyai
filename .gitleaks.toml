@@ -1,0 +1,41 @@
+# Gitleaks configuration – prevents committing secrets
+# Run: gitleaks detect --config .gitleaks.toml
+# Install: https://github.com/gitleaks/gitleaks
+
+title = "StudyAI Secret Detection"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id          = "anthropic-api-key"
+description = "Anthropic API Key"
+regex       = '''sk-ant-api\d+-[A-Za-z0-9_-]{40,}'''
+tags        = ["key", "anthropic"]
+
+[[rules]]
+id          = "firebase-private-key"
+description = "Firebase Service Account private key"
+regex       = '''-----BEGIN RSA PRIVATE KEY-----'''
+tags        = ["key", "firebase"]
+
+[[rules]]
+id          = "firebase-web-api-key-real"
+description = "Real Firebase Web API Key (AIzaSy + 35 chars)"
+regex       = '''AIzaSy[A-Za-z0-9_-]{33}'''
+tags        = ["key", "firebase"]
+
+[allowlist]
+description = "Ignore example/placeholder values"
+regexes     = [
+  '''AIzaSy\.\.\.',
+  '''sk-ant-DEIN_KEY_HIER''',
+  '''YOUR_KEY''',
+  '''EXAMPLE''',
+  '''placeholder''',
+]
+paths = [
+  '''.env.example''',
+  '''README''',
+  '''docs/''',
+]

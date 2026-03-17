@@ -47,6 +47,22 @@ Endpoints:
 
   GET    /privacy.html                 → Datenschutzerklärung
   GET    /terms.html                   → Nutzungsbedingungen
+
+  GET    /api/sessions/<id>/chat       → Chat-History laden (Phase 5)
+  POST   /api/sessions/<id>/chat       → Frage stellen + SSE-Streaming-Antwort (Phase 5)
+  DELETE /api/sessions/<id>/chat       → Chat-History löschen (Phase 5)
+
+  POST   /api/sessions/<id>/share      → Share-Token erstellen (Phase 6)
+  GET    /api/sessions/<id>/share      → Aktiven Share-Token abrufen (Phase 6)
+  DELETE /api/sessions/<id>/share      → Share-Token widerrufen (Phase 6)
+  GET    /shared/<token>               → Öffentliche Deck-Ansicht (Phase 6)
+
+  POST   /api/sessions/<id>/flashcards/<card_id>/improve → KI-Karten-Verbesserung (Phase 6)
+
+  GET    /api/gamification/stats       → Streak + Badges des eingeloggten Users (Phase 6)
+  POST   /api/gamification/check       → Neue Badges prüfen + vergeben (Phase 6)
+
+  GET    /api/admin/stats              → Plattform-Statistiken (nur Admins, Phase 6)
 """
 
 import os
@@ -86,7 +102,7 @@ if _sentry_dsn:
         print("[Sentry] sentry-sdk nicht installiert – Error-Tracking deaktiviert.")
         print("         Installieren: pip install sentry-sdk[flask]")
 
-from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context, session as flask_session
 from flask_cors import CORS
 from dotenv import load_dotenv
 import genanki
@@ -104,7 +120,10 @@ from agents.orchestrator import OrchestratorAgent
 from agents.security_agent import SecurityError
 from agents.planner_agent import PlannerAgent
 from agents.flashcard_agent import FlashcardAgent
-from agents.ml_sr_engine import MLSpacedRepetitionEngine
+from agents.ml_sr_engine import MLSpacedRepetitionEngine, get_engine_for_user
+from agents.chat_agent import ChatAgent
+from agents.improve_card_agent import ImproveCardAgent
+from admin import is_admin, estimate_cost_usd
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 _log_file_handler = RotatingFileHandler(
@@ -191,11 +210,14 @@ def add_security_headers(response):
 orchestrator = OrchestratorAgent()
 planner      = PlannerAgent()
 flashcarder  = FlashcardAgent()
-ml_sr_engine = MLSpacedRepetitionEngine()
-db           = Database()
-quiz_agent   = QuizAgent()
-firebase     = FirebaseSync()
-sec_mgr      = SecurityManager(db_path=db.db_path)
+# ml_sr_engine ist jetzt per-User – kein globaler Singleton mehr.
+# Zugriff über get_engine_for_user(uid) in den Endpoints.
+db             = Database()
+quiz_agent     = QuizAgent()
+chat_agent     = ChatAgent()
+improve_agent  = ImproveCardAgent()
+firebase       = FirebaseSync()
+sec_mgr        = SecurityManager(db_path=db.db_path)
 sec_mgr.init_app(app)
 
 
@@ -213,10 +235,16 @@ def get_current_user() -> dict:
       {"uid": str, "email": str|None, "auth_enabled": bool}
 
     Gibt None zurück wenn Firebase aktiv, aber Token fehlt/ungültig ist.
-    Gibt {"uid": "local", ...} zurück wenn Firebase nicht konfiguriert (lokaler Modus).
+    Gibt {"uid": "anon_<uuid>", ...} zurück wenn Firebase nicht konfiguriert (lokaler Modus).
+    Jede Browser-Session bekommt eine eigene UID – keine Cross-Contamination.
     """
     if not _firebase_auth_enabled():
-        return {"uid": "local", "email": None, "auth_enabled": False}
+        # Session-unique UID – verhindert Datenvermischung zwischen verschiedenen Browsers/Usern
+        if "anon_uid" not in flask_session:
+            import uuid as _uuid
+            flask_session["anon_uid"]  = f"anon_{_uuid.uuid4().hex[:16]}"
+            flask_session.permanent    = True
+        return {"uid": flask_session["anon_uid"], "email": None, "auth_enabled": False}
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -672,7 +700,7 @@ def sr_rate():
     data    = request.get_json(force=True, silent=True) or {}
     rating  = data.get("rating")
     card_id = str(data.get("card_id", "?"))[:64]  # max 64 chars
-    state   = data.get("state") or ml_sr_engine.new_card_state(card_id)
+    state   = data.get("state") or MLSpacedRepetitionEngine.new_card_state(card_id)
 
     if rating not in (0, 1, 2, 3):
         return jsonify({"error": "rating muss 0, 1, 2 oder 3 sein."}), 400
@@ -681,11 +709,12 @@ def sr_rate():
         return jsonify({"error": f"Ungültiger state: {err_msg}"}), 400
 
     try:
-        new_state = ml_sr_engine.rate(state, int(rating))
+        engine    = get_engine_for_user(user["uid"])
+        new_state = engine.rate(state, int(rating))
         return jsonify({
             "new_state"          : new_state,
-            "next_review_label"  : ml_sr_engine.time_until_due(new_state),
-            "is_due"             : ml_sr_engine.is_due(new_state),
+            "next_review_label"  : MLSpacedRepetitionEngine.time_until_due(new_state),
+            "is_due"             : MLSpacedRepetitionEngine.is_due(new_state),
         })
     except Exception as e:
         logger.exception("Fehler in /api/sr/rate")
@@ -705,7 +734,7 @@ def sr_due():
     data   = request.get_json(force=True, silent=True) or {}
     states = data.get("states", {})
 
-    due_ids = [cid for cid, st in states.items() if ml_sr_engine.is_due(st)]
+    due_ids = [cid for cid, st in states.items() if MLSpacedRepetitionEngine.is_due(st)]
     new_ids = [cid for cid, st in states.items() if st.get("total_reviews", 0) == 0]
 
     return jsonify({
@@ -733,7 +762,7 @@ def sr_train():
 
     try:
         validated_logs = orchestrator.security.validate_review_logs(raw_logs)
-        ml_sr_engine.train(validated_logs)
+        get_engine_for_user(user["uid"]).train(validated_logs)
         return jsonify({"success": True, "trained_samples": len(validated_logs)})
     except Exception as e:
         logger.exception("Fehler beim Modell-Training")
@@ -1342,6 +1371,310 @@ def generate_quiz():
     return Response(stream_with_context(generate()),
                     mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Phase 5: Chat-Tutor ───────────────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/chat", methods=["GET"])
+def get_chat_history(session_id: str):
+    """Gibt die Chat-History einer Session zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    history = db.get_chat_history(session_id, user["uid"])
+    return jsonify({"history": history})
+
+
+@app.route("/api/sessions/<session_id>/chat", methods=["POST"])
+@limiter.limit("30 per minute")
+@limiter.limit("5 per minute", key_func=_get_rate_limit_key)
+def chat_with_tutor(session_id: str):
+    """
+    Stellt eine Frage an den KI-Tutor und streamt die Antwort via SSE.
+    Body: {question: str}
+    SSE Events: chunk {text} | done {message_id} | error {message}
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    data     = request.get_json(force=True, silent=True) or {}
+    question = (data.get("question") or "").strip()
+
+    if not question:
+        return jsonify({"error": "Frage darf nicht leer sein."}), 400
+    if len(question) > 2000:
+        return jsonify({"error": "Frage zu lang (max. 2000 Zeichen)."}), 400
+
+    # Analyseergebnis + Flashcards für Kontext laden
+    result     = session.get("result") or {}
+    flashcards = session.get("flashcards") or []
+
+    # Chat-History laden (für Gesprächs-Kontext)
+    history = db.get_chat_history(session_id, user["uid"], limit=40)
+
+    # User-Nachricht sofort persistieren
+    db.add_chat_message(session_id, user["uid"], "user", question)
+
+    # Billing-Callback für Token-Tracking
+    uid = user["uid"]
+    def token_cb(tokens_in, tokens_out):
+        try:
+            db.log_tokens(uid, session_id, "ChatAgent", tokens_in, tokens_out)
+        except Exception:
+            pass
+
+    import queue as _queue
+
+    q: _queue.Queue = _queue.Queue()
+
+    def worker():
+        answer_parts = []
+        try:
+            for chunk in chat_agent.stream_response(question, history, result, flashcards):
+                answer_parts.append(chunk)
+                q.put(("chunk", {"text": chunk}))
+            # Vollständige Antwort persistieren
+            full_answer = "".join(answer_parts)
+            msg_id = db.add_chat_message(session_id, uid, "assistant", full_answer)
+            q.put(("done", {"message_id": msg_id, "length": len(full_answer)}))
+        except Exception as exc:
+            logger.exception("[Chat] Fehler bei Tutor-Antwort")
+            q.put(("error", {"message": str(exc)}))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def generate():
+        while True:
+            try:
+                event_type, payload = q.get(timeout=120)
+            except _queue.Empty:
+                yield "event: error\ndata: {\"message\": \"Timeout\"}\n\n"
+                break
+            yield f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if event_type in ("done", "error"):
+                break
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/sessions/<session_id>/chat", methods=["DELETE"])
+def delete_chat_history(session_id: str):
+    """Löscht die gesamte Chat-History einer Session."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    session = db.load_session(session_id)
+    if session is None or session.get("user_id") != user["uid"]:
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    deleted = db.delete_chat_history(session_id, user["uid"])
+    return jsonify({"deleted": deleted, "message": f"{deleted} Nachrichten gelöscht."})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PHASE 6 – DECK-SHARING, GAMIFICATION, ADMIN, KI-KARTEN-VERBESSERUNG
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── 6.1 Deck-Sharing ──────────────────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/share", methods=["POST"])
+@limiter.limit("20 per hour")
+def create_share_link(session_id: str):
+    """Erstellt oder erneuert einen öffentlichen Share-Link für ein Flashcard-Deck."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    token = db.create_share_token(session_id, user["uid"], expires_days=30)
+    # Badge-Check: Erstes geteiltes Deck
+    new_badges = db.check_and_award_badges(user["uid"])
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "token":      token,
+        "share_url":  f"{base}/shared/{token}",
+        "expires_in": "30 Tage",
+        "new_badges": new_badges,
+    })
+
+
+@app.route("/api/sessions/<session_id>/share", methods=["GET"])
+def get_share_link(session_id: str):
+    """Gibt den aktiven Share-Token einer Session zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    info = db.get_share_token(session_id, user["uid"])
+    if not info:
+        return jsonify({"token": None, "share_url": None})
+    base = request.host_url.rstrip("/")
+    return jsonify({
+        "token":      info["token"],
+        "share_url":  f"{base}/shared/{info['token']}",
+        "view_count": info["view_count"],
+        "expires_at": info["expires_at"],
+    })
+
+
+@app.route("/api/sessions/<session_id>/share", methods=["DELETE"])
+def revoke_share_link(session_id: str):
+    """Widerruft den Share-Token einer Session."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    deleted = db.delete_share_token(session_id, user["uid"])
+    return jsonify({"success": deleted})
+
+
+@app.route("/shared/<token>")
+@limiter.limit("120 per minute")
+def shared_deck_view(token: str):
+    """
+    Öffentliche Deck-Ansicht (kein Login nötig).
+    Gibt JSON mit Flashcards + Session-Metadaten zurück.
+    """
+    share_info = db.get_shared_deck(token)
+    if not share_info:
+        return jsonify({"error": "Deck nicht gefunden oder Link abgelaufen"}), 404
+
+    session_id = share_info["session_id"]
+    session    = db.load_session(session_id)
+    if not session:
+        return jsonify({"error": "Session nicht mehr verfügbar"}), 404
+
+    # Nur öffentliche Felder zurückgeben (kein user_id, keine SR-States)
+    return jsonify({
+        "session_name":  session.get("name", "Unbenanntes Deck"),
+        "created_at":    session.get("created_at", ""),
+        "flashcards":    session.get("flashcards", []),
+        "card_count":    len(session.get("flashcards", [])),
+        "view_count":    share_info["view_count"],
+        "expires_at":    share_info.get("expires_at"),
+        "analysis_meta": {
+            k: v for k, v in (session.get("analysis", {}) or {}).get("metadata", {}).items()
+            if k in ("filename", "language", "total_pages", "summary")
+        } if session.get("analysis") else {},
+    })
+
+
+# ── 6.2 KI-Karten-Verbesserung ───────────────────────────────────────────────
+
+@app.route("/api/sessions/<session_id>/flashcards/<card_id>/improve", methods=["POST"])
+@limiter.limit("30 per hour")
+def improve_flashcard(session_id: str, card_id: str):
+    """Verbessert eine Flashcard mit Claude (Phase 6)."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+    if not session_belongs_to_user(session_id, user["uid"]):
+        return jsonify({"error": "Session nicht gefunden"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    card = data.get("card")
+    if not card or not isinstance(card, dict):
+        return jsonify({"error": "card-Objekt fehlt"}), 400
+
+    # Optionalen Kontext aus der Session holen (Topics für bessere Antworten)
+    context = ""
+    try:
+        session = db.load_session(session_id)
+        if session and session.get("analysis"):
+            topics = session["analysis"].get("topics", [])[:5]
+            context = "Themen: " + ", ".join(
+                t.get("title", "") for t in topics if isinstance(t, dict)
+            )
+    except Exception:
+        pass
+
+    result = improve_agent.improve(card, context=context)
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
+
+
+# ── 6.3 Gamification – Streak + Badges ───────────────────────────────────────
+
+@app.route("/api/gamification/stats", methods=["GET"])
+def gamification_stats():
+    """Gibt Streak, Total-Reviews, Total-Cards und alle Badges zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    streak    = db.get_streak(user["uid"])
+    reviews   = db.get_total_reviews(user["uid"])
+    cards     = db.get_total_cards(user["uid"])
+    badges    = db.get_user_badges(user["uid"])
+
+    return jsonify({
+        "streak":        streak,
+        "total_reviews": reviews,
+        "total_cards":   cards,
+        "badges":        badges,
+    })
+
+
+@app.route("/api/gamification/check", methods=["POST"])
+@limiter.limit("60 per hour")
+def gamification_check():
+    """Prüft und vergibt neue Badges. Gibt neu verdiente Badges zurück."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    new_badges = db.check_and_award_badges(user["uid"])
+    return jsonify({"new_badges": new_badges})
+
+
+# ── 6.4 Admin-Dashboard ───────────────────────────────────────────────────────
+
+@app.route("/api/admin/stats", methods=["GET"])
+def admin_stats():
+    """
+    Plattform-Statistiken für Admins.
+    Zugriff: UIDs in ADMIN_UIDS-Env-Variable ODER localhost.
+    """
+    user = get_current_user()
+    is_local = request.remote_addr in ("127.0.0.1", "::1", "localhost")
+
+    # Zugriffskontrolle: Admin-UID oder Localhost
+    if user and is_admin(user["uid"]):
+        pass  # Admin-UID → erlaubt
+    elif is_local and user is None:
+        pass  # Lokaler Zugriff ohne Auth → erlaubt für Entwicklung
+    else:
+        return jsonify({"error": "Zugriff verweigert"}), 403
+
+    stats = db.get_admin_stats()
+    # Kosten-Schätzung hinzufügen
+    stats["estimated_cost_usd"] = estimate_cost_usd(
+        stats.get("total_tokens_in", 0),
+        stats.get("total_tokens_out", 0),
+    )
+    stats["generated_at"] = datetime.now(timezone.utc).isoformat()
+    return jsonify(stats)
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────────────────

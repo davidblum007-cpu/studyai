@@ -26,7 +26,9 @@ from sklearn.linear_model import SGDClassifier
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = Path(__file__).parent.parent / "ml_sr_model.pkl"
+# Basisverzeichnis für per-User-Modelle (kann via Env überschrieben werden)
+_MODELS_DIR = Path(os.getenv("ML_MODELS_DIR", str(Path(__file__).parent.parent / "ml_models")))
+_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Fallback-Intervalle wie beim SM-2 zum Start
 BASE_INTERVALS_MIN = {
@@ -36,20 +38,41 @@ BASE_INTERVALS_MIN = {
     3: 5760,    # Einfach (4 Tage)
 }
 
+# In-Memory Cache: uid → MLSpacedRepetitionEngine  (LRU über max. 100 User)
+_engine_cache: Dict[str, "MLSpacedRepetitionEngine"] = {}
+_CACHE_MAX = 100
+
+def get_engine_for_user(uid: str) -> "MLSpacedRepetitionEngine":
+    """
+    Gibt die per-User-ML-Engine zurück (lazy-loaded, gecacht).
+    Jeder User hat sein eigenes Modell – keine Cross-Contamination.
+    """
+    if uid not in _engine_cache:
+        if len(_engine_cache) >= _CACHE_MAX:
+            # Ältesten Eintrag entfernen (Simple LRU via dict ordering)
+            oldest = next(iter(_engine_cache))
+            del _engine_cache[oldest]
+        _engine_cache[uid] = MLSpacedRepetitionEngine(uid=uid)
+    return _engine_cache[uid]
+
+
 class MLSpacedRepetitionEngine:
-    def __init__(self):
-        self.name = "MLSpacedRepetitionEngine"
+    def __init__(self, uid: str = "global"):
+        # uid="global" nur als Fallback – produktiv immer uid des eingeloggten Users
+        self.uid  = uid
+        self.name = f"MLSpacedRepetitionEngine[{uid[:8]}]"
         self._unsaved_samples = 0
+        self._model_path = _MODELS_DIR / f"sr_model_{uid}.pkl"
         self.model = self._load_model()
-        logger.info(f"[{self.name}] initialisiert")
+        logger.info(f"[{self.name}] initialisiert (model_path={self._model_path})")
 
     def _load_model(self) -> SGDClassifier:
-        if os.path.exists(MODEL_PATH):
+        if self._model_path.exists():
             try:
-                return joblib.load(MODEL_PATH)
+                return joblib.load(self._model_path)
             except Exception as e:
-                logger.warning(f"Konnte Modell nicht laden, erstelle neues: {e}")
-        
+                logger.warning(f"[{self.name}] Modell konnte nicht geladen werden, erstelle neues: {e}")
+
         # Neues Modell initialisieren. `loss="log_loss"` für Wahrscheinlichkeiten.
         model = SGDClassifier(loss="log_loss", learning_rate="optimal")
         # Dummy-Fit damit das Modell `predict_proba` kann, auch ohne Logs
@@ -61,9 +84,9 @@ class MLSpacedRepetitionEngine:
 
     def _save_model(self):
         try:
-            joblib.dump(self.model, MODEL_PATH)
+            joblib.dump(self.model, self._model_path)
         except Exception as e:
-            logger.error(f"Konnte Modell nicht speichern: {e}")
+            logger.error(f"[{self.name}] Modell konnte nicht gespeichert werden: {e}")
 
     @staticmethod
     def new_card_state(card_id: str) -> Dict[str, Any]:

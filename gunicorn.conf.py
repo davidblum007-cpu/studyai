@@ -19,19 +19,19 @@ bind = "0.0.0.0:8080"
 # an open connection; threads allow other requests to be served
 # concurrently without spawning a new process per connection).
 # ------------------------------------------------------------------
+# SQLite WAL mode supports concurrent readers but only ONE writer at
+# a time.  Capping workers at 4 avoids lock-queue pile-ups.
+# Upgrade path: switch to PostgreSQL and raise to cpu_count*2+1.
 _cpu = multiprocessing.cpu_count()
-workers = min(_cpu * 2 + 1, 8)
+workers = min(_cpu, 4)          # was min(_cpu*2+1, 8) – reduced for SQLite safety
 worker_class = "gthread"
-threads = 4
+threads = 4                     # 4 workers × 4 threads = 16 concurrent slots
 
 # ------------------------------------------------------------------
 # Timeouts
-# timeout        : kill worker if it takes longer than this (seconds).
-#                  Set to 300 to accommodate long PDF-analysis tasks.
-# graceful_timeout: time given to workers to finish active requests
-#                  before being forcefully killed on SIGTERM.
-# keepalive      : seconds to wait for the next request on a
-#                  keep-alive connection.
+# ⚠️  MUST be synchronised with nginx proxy_read_timeout (nginx.conf).
+#     Set nginx to 310s so Gunicorn (300s) always kills the worker
+#     first, which gives a clean 504 rather than a mid-stream 502.
 # ------------------------------------------------------------------
 timeout = 300
 graceful_timeout = 30

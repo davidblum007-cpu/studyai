@@ -3820,6 +3820,798 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 5 – KI-TUTOR-CHAT
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── State ────────────────────────────────────────────────────────────────────
+let _chatSessionId   = null;   // Aktuelle Session-ID für Chat
+let _chatStreaming    = false;  // SSE-Stream läuft gerade
+let _chatReader      = null;   // Aktiver ReadableStreamReader (zum Abbrechen)
+
+// ── Initialisierung ───────────────────────────────────────────────────────────
+function initChat(sessionId) {
+    _chatSessionId = sessionId;
+    const section = document.getElementById("chatSection");
+    if (section) section.classList.remove("hidden");
+
+    // Chat-Verlauf vom Server laden
+    loadChatHistory();
+
+    // Auto-Resize für Textarea
+    const input = document.getElementById("chatInput");
+    if (input) {
+        input.addEventListener("input", () => {
+            _chatUpdateCharCount();
+            _chatAutoResize(input);
+        });
+        // Enter senden, Shift+Enter = Zeilenumbruch
+        input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+    }
+
+    // Senden-Button
+    document.getElementById("btnChatSend")?.addEventListener("click", () => sendChatMessage());
+
+    // Verlauf löschen
+    document.getElementById("btnChatClear")?.addEventListener("click", () => clearChatHistory());
+
+    // Vorschläge aus Session-Topics generieren
+    _chatGenerateSuggestions();
+
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// ── Char-Counter ──────────────────────────────────────────────────────────────
+function _chatUpdateCharCount() {
+    const input = document.getElementById("chatInput");
+    const counter = document.getElementById("chatCharCount");
+    if (!input || !counter) return;
+    const len = input.value.length;
+    counter.textContent = `${len} / 2000`;
+    counter.classList.toggle("chat-char-warn", len > 1800);
+}
+
+// ── Auto-Resize Textarea ──────────────────────────────────────────────────────
+function _chatAutoResize(el) {
+    el.style.height = "auto";
+    const max = 150;
+    el.style.height = Math.min(el.scrollHeight, max) + "px";
+}
+
+// ── Vorschläge aus Session-Topics ────────────────────────────────────────────
+function _chatGenerateSuggestions() {
+    const container = document.getElementById("chatSuggestions");
+    if (!container) return;
+
+    const topics = analysisResult?.topics?.slice(0, 5) ?? [];
+    if (!topics.length) return;
+
+    // Fragen-Templates
+    const templates = [
+        t => `Erkläre mir den Begriff: "${t.title ?? t}"`,
+        t => `Was ist das Wichtigste zu "${t.title ?? t}"?`,
+        t => `Gib mir ein Beispiel für "${t.title ?? t}"`
+    ];
+
+    container.innerHTML = "";
+    topics.slice(0, 4).forEach((topic, i) => {
+        const btn = document.createElement("button");
+        btn.className = "chat-suggestion-pill";
+        const tpl = templates[i % templates.length];
+        const text = tpl(topic);
+        btn.textContent = text.length > 60 ? text.slice(0, 57) + "…" : text;
+        btn.title = text;
+        btn.addEventListener("click", () => {
+            const inp = document.getElementById("chatInput");
+            if (inp) {
+                inp.value = text;
+                _chatUpdateCharCount();
+                _chatAutoResize(inp);
+                inp.focus();
+            }
+        });
+        container.appendChild(btn);
+    });
+}
+
+// ── Chat-Verlauf laden ────────────────────────────────────────────────────────
+async function loadChatHistory() {
+    if (!_chatSessionId) return;
+    try {
+        const res = await fetch(`/api/sessions/${_chatSessionId}/chat`);
+        if (!res.ok) return;
+        const { history } = await res.json();
+
+        const chatWindow = document.getElementById("chatWindow");
+        if (!chatWindow) return;
+
+        // Welcome-Screen ausblenden wenn es bereits Nachrichten gibt
+        if (history && history.length > 0) {
+            document.getElementById("chatWelcome")?.classList.add("hidden");
+            history.forEach(msg => _chatRenderMessage(msg.role, msg.content));
+            _chatScrollToBottom();
+        }
+    } catch (e) {
+        console.warn("[Chat] Verlauf konnte nicht geladen werden:", e);
+    }
+}
+
+// ── Nachricht senden ──────────────────────────────────────────────────────────
+async function sendChatMessage() {
+    if (_chatStreaming) return;
+    if (!_chatSessionId) {
+        showToast("Bitte zuerst eine Analyse durchführen oder Session laden", "error");
+        return;
+    }
+
+    const input = document.getElementById("chatInput");
+    if (!input) return;
+
+    const question = input.value.trim();
+    if (!question) return;
+    if (question.length > 2000) {
+        showToast("Frage zu lang (max. 2000 Zeichen)", "error");
+        return;
+    }
+
+    // Welcome-Screen ausblenden
+    document.getElementById("chatWelcome")?.classList.add("hidden");
+
+    // User-Nachricht rendern
+    _chatRenderMessage("user", question);
+
+    // Input leeren
+    input.value = "";
+    _chatUpdateCharCount();
+    _chatAutoResize(input);
+
+    // Senden-Button deaktivieren
+    const sendBtn = document.getElementById("btnChatSend");
+    if (sendBtn) { sendBtn.disabled = true; }
+
+    // Typing-Indikator
+    const typingId = _chatRenderTyping();
+    _chatStreaming = true;
+
+    try {
+        const resp = await fetch(`/api/sessions/${_chatSessionId}/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question }),
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            _chatRemoveTyping(typingId);
+            _chatRenderError(err.error || "Fehler beim Senden der Nachricht");
+            return;
+        }
+
+        // SSE-Stream lesen
+        const reader = resp.body.getReader();
+        _chatReader = reader;
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let assistantMsgEl = null;
+        let fullText = "";
+
+        _chatRemoveTyping(typingId);
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";  // Unvollständige Zeile aufbewahren
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const raw = line.slice(6).trim();
+                if (!raw) continue;
+
+                let parsed;
+                try { parsed = JSON.parse(raw); } catch { continue; }
+
+                if (parsed.text !== undefined) {
+                    // Chunk empfangen – Nachrichtenbubble aufbauen
+                    fullText += parsed.text;
+                    if (!assistantMsgEl) {
+                        assistantMsgEl = _chatRenderMessage("assistant", "");
+                    }
+                    _chatUpdateStreamingMessage(assistantMsgEl, fullText);
+                } else if (parsed.done) {
+                    // Stream abgeschlossen
+                    if (assistantMsgEl) {
+                        _chatFinalizeMessage(assistantMsgEl, fullText);
+                    }
+                } else if (parsed.error) {
+                    _chatRenderError(parsed.error);
+                }
+            }
+        }
+
+        _chatScrollToBottom();
+
+    } catch (e) {
+        if (e.name !== "AbortError") {
+            _chatRemoveTyping(typingId);
+            _chatRenderError("Verbindungsfehler. Bitte versuche es erneut.");
+        }
+    } finally {
+        _chatStreaming = false;
+        _chatReader = null;
+        if (sendBtn) { sendBtn.disabled = false; }
+        input.focus();
+    }
+}
+
+// ── Nachricht rendern ─────────────────────────────────────────────────────────
+function _chatRenderMessage(role, content) {
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return null;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `chat-msg chat-msg-${role}`;
+    wrapper.dataset.role = role;
+
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+
+    if (role === "assistant" && content) {
+        bubble.innerHTML = _chatFormatMarkdown(content);
+    } else {
+        // User-Nachrichten: reines textContent (kein HTML)
+        bubble.textContent = content;
+    }
+
+    wrapper.appendChild(bubble);
+
+    // Timestamp
+    const ts = document.createElement("span");
+    ts.className = "chat-ts";
+    ts.textContent = new Date().toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    wrapper.appendChild(ts);
+
+    chatWindow.appendChild(wrapper);
+    _chatScrollToBottom();
+    return wrapper;
+}
+
+// ── Streaming-Update ──────────────────────────────────────────────────────────
+function _chatUpdateStreamingMessage(el, text) {
+    const bubble = el?.querySelector(".chat-bubble");
+    if (!bubble) return;
+    bubble.innerHTML = _chatFormatMarkdown(text) + '<span class="chat-cursor">▌</span>';
+    _chatScrollToBottom();
+}
+
+// ── Finalisierung Streaming ───────────────────────────────────────────────────
+function _chatFinalizeMessage(el, text) {
+    const bubble = el?.querySelector(".chat-bubble");
+    if (!bubble) return;
+    bubble.innerHTML = _chatFormatMarkdown(text);
+    el?.classList.add("chat-msg-done");
+}
+
+// ── Typing-Indikator ──────────────────────────────────────────────────────────
+function _chatRenderTyping() {
+    const id = "chat-typing-" + Date.now();
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return id;
+    const el = document.createElement("div");
+    el.id = id;
+    el.className = "chat-msg chat-msg-assistant chat-typing";
+    el.innerHTML = `<div class="chat-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
+    chatWindow.appendChild(el);
+    _chatScrollToBottom();
+    return id;
+}
+
+function _chatRemoveTyping(id) {
+    document.getElementById(id)?.remove();
+}
+
+// ── Fehler-Nachricht ──────────────────────────────────────────────────────────
+function _chatRenderError(msg) {
+    const chatWindow = document.getElementById("chatWindow");
+    if (!chatWindow) return;
+    const el = document.createElement("div");
+    el.className = "chat-msg chat-msg-error";
+    el.innerHTML = `<div class="chat-bubble chat-bubble-error">⚠️ ${escHtml(msg)}</div>`;
+    chatWindow.appendChild(el);
+    _chatScrollToBottom();
+}
+
+// ── Scroll to Bottom ──────────────────────────────────────────────────────────
+function _chatScrollToBottom() {
+    const chatWindow = document.getElementById("chatWindow");
+    if (chatWindow) chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+// ── Markdown → HTML (lightweight) ─────────────────────────────────────────────
+function _chatFormatMarkdown(text) {
+    if (!text) return "";
+    let html = text
+        // Code-Blöcke (```...```) – vor inline code
+        .replace(/```([^`]*)```/gs, (_, code) => `<pre class="chat-code-block"><code>${escHtml(code.trim())}</code></pre>`)
+        // Inline Code
+        .replace(/`([^`\n]+)`/g, (_, code) => `<code class="chat-inline-code">${escHtml(code)}</code>`)
+        // Bold **text**
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        // Italic *text*
+        .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+        // Nummerierte Liste
+        .replace(/^\d+\.\s+(.+)$/gm, "<li>$1</li>")
+        // Bulletpoints
+        .replace(/^[-\u2022]\s+(.+)$/gm, "<li>$1</li>")
+        // Wrap li-Gruppen in <ul>
+        .replace(/((?:<li>.*?<\/li>\n?)+)/gs, "<ul>$1</ul>")
+        // Zeilenumbrüche → <br>
+        .replace(/\n(?!<\/?(ul|li|pre|code))/g, "<br>");
+
+    if (typeof DOMPurify !== "undefined") {
+        html = DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: ["strong","em","code","pre","ul","li","br","span"],
+            ALLOWED_ATTR: ["class"]
+        });
+    }
+    return html;
+}
+
+// ── Chat-Verlauf löschen ──────────────────────────────────────────────────────
+async function clearChatHistory() {
+    if (!_chatSessionId) return;
+    const ok = window.confirm("Chat-Verlauf wirklich löschen?");
+    if (!ok) return;
+
+    try {
+        const res = await fetch(`/api/sessions/${_chatSessionId}/chat`, { method: "DELETE" });
+        if (!res.ok) {
+            showToast("Fehler beim Löschen", "error");
+            return;
+        }
+
+        // UI zurücksetzen
+        const chatWindow = document.getElementById("chatWindow");
+        if (chatWindow) {
+            Array.from(chatWindow.children).forEach(child => {
+                if (child.id !== "chatWelcome") child.remove();
+            });
+            document.getElementById("chatWelcome")?.classList.remove("hidden");
+        }
+        showToast("Chat-Verlauf gelöscht", "success");
+    } catch (e) {
+        showToast("Fehler beim Löschen des Verlaufs", "error");
+    }
+}
+
+// ── Integration: Chat-Button Event-Listener ───────────────────────────────────
+document.getElementById("btnOpenChat")?.addEventListener("click", () => {
+    if (!_chatSessionId && currentSessionId) {
+        _chatSessionId = currentSessionId;
+        loadChatHistory();
+        _chatGenerateSuggestions();
+    }
+    const cs = document.getElementById("chatSection");
+    if (cs) {
+        cs.classList.remove("hidden");
+        cs.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+});
+
+// ── Integration: Chat nach renderResults aktivieren ───────────────────────────
+const _p5RenderResults = window.renderResults;
+window.renderResults = function(data) {
+    _p5RenderResults(data);
+    // Chat-Sektion anzeigen wenn Session vorhanden
+    if (currentSessionId) {
+        _chatSessionId = currentSessionId;
+        const cs = document.getElementById("chatSection");
+        if (cs) cs.classList.remove("hidden");
+        _chatGenerateSuggestions();
+    }
+};
+
+// ── Integration: Chat nach loadSession laden ──────────────────────────────────
+const _p5OrigLoadSession = window.loadSession;
+window.loadSession = async function(sessionId) {
+    await _p5OrigLoadSession(sessionId);
+    if (sessionId) {
+        _chatSessionId = sessionId;
+        // Chat-Verlauf laden (leise)
+        try {
+            const res = await fetch(`/api/sessions/${sessionId}/chat`);
+            if (res.ok) {
+                const { history } = await res.json();
+                if (history && history.length > 0) {
+                    const cs = document.getElementById("chatSection");
+                    if (cs) cs.classList.remove("hidden");
+                    document.getElementById("chatWelcome")?.classList.add("hidden");
+                    history.forEach(msg => _chatRenderMessage(msg.role, msg.content));
+                    _chatScrollToBottom();
+                }
+            }
+        } catch (_) { /* ignore */ }
+    }
+};
+
+// ── Integration: Chat bei resetApp ausblenden ─────────────────────────────────
+const _p5ResetApp = window.resetApp;
+window.resetApp = function() {
+    _p5ResetApp();
+    document.getElementById("chatSection")?.classList.add("hidden");
+    const chatWindow = document.getElementById("chatWindow");
+    if (chatWindow) {
+        Array.from(chatWindow.children).forEach(child => {
+            if (child.id !== "chatWelcome") child.remove();
+        });
+        document.getElementById("chatWelcome")?.classList.remove("hidden");
+    }
+    _chatSessionId = null;
+    _chatStreaming  = false;
+};
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 6 – DECK-SHARING, GAMIFICATION, KI-KARTEN-VERBESSERUNG
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── 6.1 Deck-Sharing ──────────────────────────────────────────────────────────
+
+function openShareModal() {
+    if (!currentSessionId) {
+        showToast("Bitte zuerst eine Session laden oder analysieren", "error");
+        return;
+    }
+    const modal = document.getElementById("shareModal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    _loadShareStatus();
+}
+
+async function _loadShareStatus() {
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const input = document.getElementById("shareUrlInput");
+        const meta  = document.getElementById("shareMeta");
+        if (data.share_url && input) {
+            input.value = data.share_url;
+            if (meta) meta.textContent =
+                `👁 ${data.view_count ?? 0} Aufrufe · Läuft ab: ${data.expires_at ? new Date(data.expires_at).toLocaleDateString("de-DE") : "–"}`;
+        } else if (input) {
+            input.value = "";
+            if (meta) meta.textContent = "Noch kein aktiver Link.";
+        }
+    } catch (_) {}
+}
+
+async function createShareLink() {
+    if (!currentSessionId) return;
+    const btn = document.getElementById("btnCreateShare");
+    if (btn) { btn.disabled = true; btn.textContent = "Erstelle…"; }
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`, { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || "Fehler", "error"); return; }
+        const input = document.getElementById("shareUrlInput");
+        if (input) input.value = data.share_url;
+        const meta = document.getElementById("shareMeta");
+        if (meta) meta.textContent = `✅ Link erstellt · ${data.expires_in} gültig`;
+        showToast("🔗 Share-Link erstellt!", "success");
+        if (data.new_badges?.length) _showNewBadges(data.new_badges);
+    } catch (e) {
+        showToast("Fehler beim Erstellen des Links", "error");
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "🔗 Link erstellen / erneuern"; }
+    }
+}
+
+async function revokeShareLink() {
+    if (!currentSessionId) return;
+    const ok = window.confirm("Share-Link wirklich widerrufen? Der Link wird ungültig.");
+    if (!ok) return;
+    try {
+        const res  = await fetch(`/api/sessions/${currentSessionId}/share`, { method: "DELETE" });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            const input = document.getElementById("shareUrlInput");
+            if (input) input.value = "";
+            const meta = document.getElementById("shareMeta");
+            if (meta) meta.textContent = "Link wurde widerrufen.";
+            showToast("Link widerrufen", "success");
+        }
+    } catch (e) {
+        showToast("Fehler beim Widerrufen", "error");
+    }
+}
+
+function copyShareUrl() {
+    const input = document.getElementById("shareUrlInput");
+    if (!input || !input.value) return;
+    navigator.clipboard?.writeText(input.value).then(() => {
+        showToast("📋 Link kopiert!", "success");
+    }).catch(() => {
+        input.select();
+        document.execCommand("copy");
+        showToast("📋 Link kopiert!", "success");
+    });
+}
+
+/** Prüft ob URL /shared/<token> ist und zeigt Deck-Preview an. */
+async function _checkSharedDeckUrl() {
+    const path  = window.location.pathname;
+    const match = path.match(/^\/shared\/([A-Za-z0-9_-]{10,20})$/);
+    if (!match) return;
+    const token = match[1];
+    try {
+        const res  = await fetch(`/shared/${token}`);
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || "Deck nicht gefunden", "error"); return; }
+        _renderSharedDeck(data);
+    } catch (e) {
+        showToast("Fehler beim Laden des geteilten Decks", "error");
+    }
+}
+
+function _renderSharedDeck(data) {
+    const modal   = document.getElementById("sharedDeckModal");
+    const content = document.getElementById("sharedDeckContent");
+    const title   = document.getElementById("sharedDeckTitle");
+    if (!modal || !content) return;
+
+    if (title) title.textContent = `📚 ${data.session_name}`;
+
+    const cards = data.flashcards || [];
+    content.innerHTML = `
+        <div class="shared-deck-meta">
+            <span>🃏 ${cards.length} Karten</span>
+            <span>👁 ${data.view_count ?? 0} Aufrufe</span>
+            ${data.analysis_meta?.language ? `<span>🌐 ${escHtml(data.analysis_meta.language)}</span>` : ""}
+        </div>
+        <div class="shared-cards-list">
+            ${cards.slice(0, 20).map(c => `
+                <div class="shared-card-item">
+                    <div class="shared-card-front">${escHtml(c.front ?? "")}</div>
+                    <div class="shared-card-back">${escHtml(c.back ?? "")}</div>
+                </div>
+            `).join("")}
+            ${cards.length > 20 ? `<p class="shared-more">… und ${cards.length - 20} weitere Karten</p>` : ""}
+        </div>`;
+
+    modal.classList.remove("hidden");
+}
+
+// Share-Modal Event-Listener
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btnShareDeck")?.addEventListener("click", openShareModal);
+    document.getElementById("btnShareModalClose")?.addEventListener("click", () =>
+        document.getElementById("shareModal")?.classList.add("hidden"));
+    document.getElementById("btnCreateShare")?.addEventListener("click", createShareLink);
+    document.getElementById("btnRevokeShare")?.addEventListener("click", revokeShareLink);
+    document.getElementById("btnCopyShareUrl")?.addEventListener("click", copyShareUrl);
+    document.getElementById("shareModal")?.addEventListener("click", (e) => {
+        if (e.target === document.getElementById("shareModal"))
+            document.getElementById("shareModal")?.classList.add("hidden");
+    });
+    document.getElementById("btnSharedDeckClose")?.addEventListener("click", () =>
+        document.getElementById("sharedDeckModal")?.classList.add("hidden"));
+    _checkSharedDeckUrl();
+});
+
+// ── 6.2 KI-Karten-Verbesserung ───────────────────────────────────────────────
+
+async function improveCurrentCard() {
+    if (!fcFiltered.length) return;
+    const card = fcFiltered[fcCurrentIdx];
+    if (!card || !currentSessionId) return;
+
+    const btn = document.getElementById("fcImproveBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "🤖 Verbessere…"; }
+
+    try {
+        const res  = await fetch(
+            `/api/sessions/${currentSessionId}/flashcards/${card.id}/improve`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ card }),
+            }
+        );
+        const data = await res.json();
+        if (!res.ok || data.error) {
+            showToast(data.error || "KI-Verbesserung fehlgeschlagen", "error");
+            return;
+        }
+        _showImprovePreview(card, data);
+    } catch (e) {
+        showToast("Verbindungsfehler bei KI-Verbesserung", "error");
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "🤖 KI verbessern"; }
+    }
+}
+
+function _showImprovePreview(originalCard, improved) {
+    document.getElementById("improvePreviewOverlay")?.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "improvePreviewOverlay";
+    overlay.className = "fc-editor-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-label", "Verbesserungsvorschlag");
+
+    overlay.innerHTML = `
+        <div class="fc-editor-modal improve-preview-modal">
+            <h3 class="fc-editor-title">🤖 KI-Verbesserungsvorschlag</h3>
+            ${improved.improvement_note ? `<p class="improve-note">💡 ${escHtml(improved.improvement_note)}</p>` : ""}
+            <div class="improve-compare">
+                <div class="improve-col">
+                    <div class="improve-col-label">Vorher</div>
+                    <div class="improve-field-label">Vorderseite</div>
+                    <div class="improve-text improve-text-old">${escHtml(originalCard.front ?? "")}</div>
+                    <div class="improve-field-label">Rückseite</div>
+                    <div class="improve-text improve-text-old">${escHtml(originalCard.back ?? "")}</div>
+                </div>
+                <div class="improve-col">
+                    <div class="improve-col-label">Nachher ✨</div>
+                    <div class="improve-field-label">Vorderseite</div>
+                    <div class="improve-text improve-text-new">${escHtml(improved.front ?? "")}</div>
+                    <div class="improve-field-label">Rückseite</div>
+                    <div class="improve-text improve-text-new">${escHtml(improved.back ?? "")}</div>
+                    ${improved.hint ? `<div class="improve-field-label">Tipp</div>
+                    <div class="improve-text improve-text-hint">${escHtml(improved.hint)}</div>` : ""}
+                </div>
+            </div>
+            <div class="fc-editor-actions">
+                <button class="btn-primary" id="btnImproveAccept">✅ Übernehmen</button>
+                <button class="btn-ghost" id="btnImproveCancel">Verwerfen</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById("btnImproveCancel")?.addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") overlay.remove(); });
+
+    document.getElementById("btnImproveAccept")?.addEventListener("click", async () => {
+        const updates = { front: improved.front, back: improved.back };
+        if (improved.hint) updates.hint = improved.hint;
+        try {
+            const res = await fetch(
+                `/api/sessions/${currentSessionId}/flashcards/${originalCard.id}`,
+                {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ card: updates }),
+                }
+            );
+            if (res.ok) {
+                Object.assign(originalCard, updates);
+                if (typeof showCard === "function") showCard(fcCurrentIdx);
+                showToast("✅ Karte verbessert und gespeichert", "success");
+                overlay.remove();
+                _checkBadges();
+            } else {
+                showToast("Fehler beim Speichern", "error");
+            }
+        } catch (e) {
+            showToast("Verbindungsfehler", "error");
+        }
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("fcImproveBtn")?.addEventListener("click", improveCurrentCard);
+});
+
+// ── 6.3 Gamification – Streak + Badges ───────────────────────────────────────
+
+window._userBadges = [];
+
+async function loadGamificationStats() {
+    try {
+        const res = await fetch("/api/gamification/stats");
+        if (!res.ok) return;
+        const data = await res.json();
+        const streakEl = document.getElementById("userStreakValue");
+        if (streakEl) streakEl.textContent = data.streak ?? 0;
+        window._userBadges = data.badges || [];
+        return data;
+    } catch (e) {
+        console.debug("[Gamification] Fehler:", e);
+    }
+}
+
+async function _checkBadges() {
+    try {
+        const res = await fetch("/api/gamification/check", { method: "POST" });
+        if (!res.ok) return;
+        const { new_badges } = await res.json();
+        if (new_badges?.length) {
+            _showNewBadges(new_badges);
+            window._userBadges = [...(window._userBadges || []), ...new_badges];
+        }
+    } catch (_) {}
+}
+
+function _showNewBadges(badges) {
+    badges.forEach(b => showToast(`${b.icon} Neues Badge: ${b.label}!`, "success"));
+}
+
+function openBadgesModal() {
+    const modal = document.getElementById("badgesModal");
+    const grid  = document.getElementById("badgesGrid");
+    const empty = document.getElementById("badgesEmpty");
+    if (!modal || !grid) return;
+
+    const badges = window._userBadges || [];
+    const ALL_BADGES = [
+        { key: "first_review",  icon: "🎯", label: "Erste Review",      desc: "Erste Lernkarte bewertet" },
+        { key: "streak_3",      icon: "🔥", label: "3-Tage-Streak",      desc: "3 Tage in Folge gelernt" },
+        { key: "streak_7",      icon: "🏆", label: "Wochenchampion",     desc: "7 Tage in Folge gelernt" },
+        { key: "streak_30",     icon: "💪", label: "Monatsmarathon",     desc: "30 Tage in Folge gelernt" },
+        { key: "cards_10",      icon: "📚", label: "Kartensammler",      desc: "10 Karten erstellt" },
+        { key: "cards_100",     icon: "🃏", label: "Kartenproffi",       desc: "100 Karten erstellt" },
+        { key: "reviews_50",    icon: "⚡", label: "Fleißig",            desc: "50 Reviews abgeschlossen" },
+        { key: "reviews_500",   icon: "🚀", label: "Ausdauer",           desc: "500 Reviews abgeschlossen" },
+        { key: "first_share",   icon: "🔗", label: "Teilen ist Lernen",  desc: "Erstes Deck geteilt" },
+    ];
+    const earnedKeys = new Set(badges.map(b => b.key));
+
+    if (!earnedKeys.size) {
+        grid.innerHTML = "";
+        empty?.classList.remove("hidden");
+    } else {
+        empty?.classList.add("hidden");
+        grid.innerHTML = ALL_BADGES.map(b => {
+            const earned = earnedKeys.has(b.key);
+            const eb = badges.find(x => x.key === b.key);
+            const dateStr = eb?.earned_at ? new Date(eb.earned_at).toLocaleDateString("de-DE") : "";
+            return `
+                <div class="badge-item ${earned ? "badge-earned" : "badge-locked"}">
+                    <div class="badge-icon">${earned ? b.icon : "🔒"}</div>
+                    <div class="badge-label">${escHtml(b.label)}</div>
+                    <div class="badge-desc">${escHtml(b.desc)}</div>
+                    ${earned && dateStr ? `<div class="badge-date">${dateStr}</div>` : ""}
+                </div>`;
+        }).join("");
+    }
+
+    modal.classList.remove("hidden");
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("btnShowBadges")?.addEventListener("click", () => {
+        _closeUserMenu();
+        openBadgesModal();
+    });
+    document.getElementById("btnBadgesModalClose")?.addEventListener("click", () =>
+        document.getElementById("badgesModal")?.classList.add("hidden"));
+    document.getElementById("badgesModal")?.addEventListener("click", (e) => {
+        if (e.target === document.getElementById("badgesModal"))
+            document.getElementById("badgesModal")?.classList.add("hidden");
+    });
+});
+
+// Gamification nach loadUserProfile nachladen
+const _p6OrigLoadUserProfile = window.loadUserProfile;
+window.loadUserProfile = async function() {
+    if (_p6OrigLoadUserProfile) await _p6OrigLoadUserProfile();
+    await loadGamificationStats();
+    // Badge-Check nach Login (neue Badges seit letztem Besuch?)
+    await _checkBadges();
+};
+
+
 // ── App starten ───────────────────────────────────────────────────────────────
 (async () => {
     await initAuth();
