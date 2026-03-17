@@ -186,6 +186,19 @@ class Database:
                 UNIQUE(uid, badge_key)
             );
             CREATE INDEX IF NOT EXISTS idx_badges_uid ON user_badges(uid);
+
+            -- ── Phase 7: Push-Notifications ───────────────────────────────────
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid         TEXT    NOT NULL,
+                endpoint    TEXT    NOT NULL,
+                p256dh      TEXT    NOT NULL,
+                auth        TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL,
+                last_used   TEXT,
+                UNIQUE(uid, endpoint)
+            );
+            CREATE INDEX IF NOT EXISTS idx_push_uid ON push_subscriptions(uid);
         """)
         conn.commit()
         # Migration: user_id-Spalte zu bestehenden Datenbanken hinzufügen
@@ -935,3 +948,65 @@ class Database:
         stats["total_tokens_in"]  = row["inp"] or 0 if row else 0
         stats["total_tokens_out"] = row["out"] or 0 if row else 0
         return stats
+
+    # ── Phase 7: Push-Subscriptions ───────────────────────────────────────────
+
+    def save_push_subscription(self, uid: str, endpoint: str, p256dh: str, auth: str) -> bool:
+        """Speichert oder aktualisiert eine Web-Push-Subscription."""
+        now  = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        conn.execute("""
+            INSERT INTO push_subscriptions (uid, endpoint, p256dh, auth, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(uid, endpoint) DO UPDATE SET
+                p256dh   = excluded.p256dh,
+                auth     = excluded.auth,
+                last_used = ?
+        """, (uid, endpoint, p256dh, auth, now, now))
+        conn.commit()
+        return True
+
+    def delete_push_subscription(self, uid: str, endpoint: str) -> bool:
+        """Entfernt eine Web-Push-Subscription."""
+        conn = self._get_conn()
+        cur  = conn.execute(
+            "DELETE FROM push_subscriptions WHERE uid = ? AND endpoint = ?",
+            (uid, endpoint)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def get_push_subscriptions(self, uid: str) -> list:
+        """Gibt alle aktiven Push-Subscriptions eines Users zurueck."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE uid = ?",
+            (uid,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_push_subscriptions(self) -> list:
+        """Gibt alle Push-Subscriptions zurueck (fuer Reminder-Cron)."""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT uid, endpoint, p256dh, auth FROM push_subscriptions"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_push_last_used(self, uid: str, endpoint: str):
+        """Aktualisiert den last_used Zeitstempel."""
+        now  = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE push_subscriptions SET last_used = ? WHERE uid = ? AND endpoint = ?",
+            (now, uid, endpoint)
+        )
+        conn.commit()
+
+    def has_push_subscription(self, uid: str) -> bool:
+        """Prueft ob der User mind. eine aktive Push-Subscription hat."""
+        conn = self._get_conn()
+        row  = conn.execute(
+            "SELECT 1 FROM push_subscriptions WHERE uid = ? LIMIT 1", (uid,)
+        ).fetchone()
+        return row is not None

@@ -145,6 +145,41 @@ async function networkFirstExternal(request) {
   }
 }
 
+// ── Phase 7: Push-Notifications ──────────────────────────────────────────────
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data?.json() ?? {}; } catch (_) {}
+
+  const title   = data.title || "StudyAI";
+  const options = {
+    body:      data.body  || "Du hast Karten zum Wiederholen!",
+    icon:      "/icons/icon-192.png",
+    badge:     "/icons/icon-72.png",
+    tag:       "studyai-reminder",
+    renotify:  true,
+    vibrate:   [200, 100, 200],
+    data:      { url: data.url || "/" },
+    actions: [
+      { action: "review",  title: "Jetzt lernen" },
+      { action: "dismiss", title: "Spaeter"      },
+    ],
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  if (event.action === "dismiss") return;
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+      const existing = wins.find((w) => w.url.includes(self.location.origin));
+      if (existing) { existing.focus(); existing.navigate(url); }
+      else           { clients.openWindow(url); }
+    })
+  );
+});
+
 // ── Background Sync: Offline-Queue nachsenden ────────────────────────────────
 self.addEventListener("sync", (e) => {
   if (e.tag === "studyai-sync-sessions") {

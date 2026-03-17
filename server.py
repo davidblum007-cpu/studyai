@@ -124,6 +124,10 @@ from agents.ml_sr_engine import MLSpacedRepetitionEngine, get_engine_for_user
 from agents.chat_agent import ChatAgent
 from agents.improve_card_agent import ImproveCardAgent
 from admin import is_admin, estimate_cost_usd
+from agents.notification_agent import (
+    get_vapid_public_key, send_push_notification,
+    send_reminders_for_all_users, _push_enabled,
+)
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 _log_file_handler = RotatingFileHandler(
@@ -1675,6 +1679,98 @@ def admin_stats():
     )
     stats["generated_at"] = datetime.now(timezone.utc).isoformat()
     return jsonify(stats)
+
+
+# ── Phase 7: Push-Notifications ──────────────────────────────────────────────
+
+@app.route("/api/notifications/vapid-public-key", methods=["GET"])
+def notifications_vapid_key():
+    """Gibt den öffentlichen VAPID-Key zurück (für den Browser zum Abonnieren)."""
+    return jsonify({
+        "vapid_public_key": get_vapid_public_key(),
+        "push_enabled":     _push_enabled(),
+    })
+
+
+@app.route("/api/notifications/subscribe", methods=["POST"])
+def notifications_subscribe():
+    """
+    Speichert eine Web-Push-Subscription.
+    Body: { endpoint: str, keys: { p256dh: str, auth: str } }
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    data     = request.get_json(force=True, silent=True) or {}
+    endpoint = data.get("endpoint", "")
+    keys     = data.get("keys", {})
+    p256dh   = keys.get("p256dh", "")
+    auth     = keys.get("auth", "")
+
+    if not endpoint or not p256dh or not auth:
+        return jsonify({"error": "endpoint, p256dh und auth sind erforderlich"}), 400
+    if len(endpoint) > 500 or len(p256dh) > 200 or len(auth) > 100:
+        return jsonify({"error": "Ungültige Subscription-Daten"}), 400
+
+    db.save_push_subscription(user["uid"], endpoint, p256dh, auth)
+    return jsonify({"success": True, "message": "Push-Subscription gespeichert"})
+
+
+@app.route("/api/notifications/unsubscribe", methods=["POST"])
+def notifications_unsubscribe():
+    """
+    Entfernt eine Web-Push-Subscription.
+    Body: { endpoint: str }
+    """
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    data     = request.get_json(force=True, silent=True) or {}
+    endpoint = data.get("endpoint", "")
+    if not endpoint:
+        return jsonify({"error": "endpoint ist erforderlich"}), 400
+
+    removed = db.delete_push_subscription(user["uid"], endpoint)
+    return jsonify({"success": True, "removed": removed})
+
+
+@app.route("/api/notifications/status", methods=["GET"])
+def notifications_status():
+    """Gibt zurück ob der User Push-Notifications abonniert hat."""
+    user = get_current_user()
+    if user is None:
+        return jsonify({"error": "Nicht authentifiziert"}), 401
+
+    has_sub = db.has_push_subscription(user["uid"])
+    return jsonify({
+        "subscribed":   has_sub,
+        "push_enabled": _push_enabled(),
+    })
+
+
+@app.route("/api/notifications/send-reminders", methods=["POST"])
+@limiter.limit("2 per minute")
+def notifications_send_reminders():
+    """
+    Löst Erinnerungs-Benachrichtigungen für alle User mit fälligen Karten aus.
+    Nur von localhost oder Admins aufrufbar (für Cron-Job).
+    Cron-Beispiel: curl -X POST http://localhost:5000/api/notifications/send-reminders
+    """
+    user = get_current_user()
+    is_local = request.remote_addr in ("127.0.0.1", "::1", "localhost")
+
+    if not is_local:
+        if user is None or not is_admin(user.get("uid", "")):
+            return jsonify({"error": "Nur für Admins oder lokalen Zugriff"}), 403
+
+    try:
+        stats = send_reminders_for_all_users(db)
+        return jsonify({"success": True, "stats": stats})
+    except Exception as exc:
+        logger.exception("Fehler beim Senden der Erinnerungen")
+        return jsonify({"error": str(exc)}), 500
 
 
 # ── Start ─────────────────────────────────────────────────────────────────────────────────
