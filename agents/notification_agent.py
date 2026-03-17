@@ -282,28 +282,27 @@ if __name__ == "__main__":
         try:
             from py_vapid import Vapid
             import base64
+            from cryptography.hazmat.primitives.serialization import (
+                Encoding, PrivateFormat, PublicFormat, NoEncryption,
+            )
             v = Vapid()
             v.generate_keys()
+            # Privater Key als PKCS8-DER (einziges Format das EC-Keys unterstützen)
             priv = base64.urlsafe_b64encode(
                 v.private_key.private_bytes(
-                    encoding=__import__("cryptography.hazmat.primitives.serialization",
-                                        fromlist=["Encoding"]).Encoding.Raw,
-                    format=__import__("cryptography.hazmat.primitives.serialization",
-                                      fromlist=["PrivateFormat"]).PrivateFormat.Raw,
-                    encryption_algorithm=__import__(
-                        "cryptography.hazmat.primitives.serialization",
-                        fromlist=["NoEncryption"]).NoEncryption(),
+                    encoding=Encoding.DER,
+                    format=PrivateFormat.PKCS8,
+                    encryption_algorithm=NoEncryption(),
                 )
             ).decode().rstrip("=")
+            # Öffentlicher Key als unkomprimierter X9.62-Punkt
             pub = base64.urlsafe_b64encode(
                 v.public_key.public_bytes(
-                    encoding=__import__("cryptography.hazmat.primitives.serialization",
-                                        fromlist=["Encoding"]).Encoding.X962,
-                    format=__import__("cryptography.hazmat.primitives.serialization",
-                                      fromlist=["PublicFormat"]).PublicFormat.UncompressedPoint,
+                    encoding=Encoding.X962,
+                    format=PublicFormat.UncompressedPoint,
                 )
             ).decode().rstrip("=")
-            print("Füge folgendes in deine .env ein:\n")
+            print("Fuege folgendes in deine .env ein:\n")
             print(f"VAPID_PRIVATE_KEY={priv}")
             print(f"VAPID_PUBLIC_KEY={pub}")
             print(f"VAPID_CLAIMS_EMAIL=mailto:deine@email.com")
