@@ -102,7 +102,7 @@ if _sentry_dsn:
         print("[Sentry] sentry-sdk nicht installiert – Error-Tracking deaktiviert.")
         print("         Installieren: pip install sentry-sdk[flask]")
 
-from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response, stream_with_context, session as flask_session
 from flask_cors import CORS
 from dotenv import load_dotenv
 import genanki
@@ -120,7 +120,7 @@ from agents.orchestrator import OrchestratorAgent
 from agents.security_agent import SecurityError
 from agents.planner_agent import PlannerAgent
 from agents.flashcard_agent import FlashcardAgent
-from agents.ml_sr_engine import MLSpacedRepetitionEngine
+from agents.ml_sr_engine import MLSpacedRepetitionEngine, get_engine_for_user
 from agents.chat_agent import ChatAgent
 from agents.improve_card_agent import ImproveCardAgent
 from admin import is_admin, estimate_cost_usd
@@ -210,7 +210,8 @@ def add_security_headers(response):
 orchestrator = OrchestratorAgent()
 planner      = PlannerAgent()
 flashcarder  = FlashcardAgent()
-ml_sr_engine = MLSpacedRepetitionEngine()
+# ml_sr_engine ist jetzt per-User – kein globaler Singleton mehr.
+# Zugriff über get_engine_for_user(uid) in den Endpoints.
 db             = Database()
 quiz_agent     = QuizAgent()
 chat_agent     = ChatAgent()
@@ -234,10 +235,16 @@ def get_current_user() -> dict:
       {"uid": str, "email": str|None, "auth_enabled": bool}
 
     Gibt None zurück wenn Firebase aktiv, aber Token fehlt/ungültig ist.
-    Gibt {"uid": "local", ...} zurück wenn Firebase nicht konfiguriert (lokaler Modus).
+    Gibt {"uid": "anon_<uuid>", ...} zurück wenn Firebase nicht konfiguriert (lokaler Modus).
+    Jede Browser-Session bekommt eine eigene UID – keine Cross-Contamination.
     """
     if not _firebase_auth_enabled():
-        return {"uid": "local", "email": None, "auth_enabled": False}
+        # Session-unique UID – verhindert Datenvermischung zwischen verschiedenen Browsers/Usern
+        if "anon_uid" not in flask_session:
+            import uuid as _uuid
+            flask_session["anon_uid"]  = f"anon_{_uuid.uuid4().hex[:16]}"
+            flask_session.permanent    = True
+        return {"uid": flask_session["anon_uid"], "email": None, "auth_enabled": False}
 
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -693,7 +700,7 @@ def sr_rate():
     data    = request.get_json(force=True, silent=True) or {}
     rating  = data.get("rating")
     card_id = str(data.get("card_id", "?"))[:64]  # max 64 chars
-    state   = data.get("state") or ml_sr_engine.new_card_state(card_id)
+    state   = data.get("state") or MLSpacedRepetitionEngine.new_card_state(card_id)
 
     if rating not in (0, 1, 2, 3):
         return jsonify({"error": "rating muss 0, 1, 2 oder 3 sein."}), 400
@@ -702,11 +709,12 @@ def sr_rate():
         return jsonify({"error": f"Ungültiger state: {err_msg}"}), 400
 
     try:
-        new_state = ml_sr_engine.rate(state, int(rating))
+        engine    = get_engine_for_user(user["uid"])
+        new_state = engine.rate(state, int(rating))
         return jsonify({
             "new_state"          : new_state,
-            "next_review_label"  : ml_sr_engine.time_until_due(new_state),
-            "is_due"             : ml_sr_engine.is_due(new_state),
+            "next_review_label"  : MLSpacedRepetitionEngine.time_until_due(new_state),
+            "is_due"             : MLSpacedRepetitionEngine.is_due(new_state),
         })
     except Exception as e:
         logger.exception("Fehler in /api/sr/rate")
@@ -726,7 +734,7 @@ def sr_due():
     data   = request.get_json(force=True, silent=True) or {}
     states = data.get("states", {})
 
-    due_ids = [cid for cid, st in states.items() if ml_sr_engine.is_due(st)]
+    due_ids = [cid for cid, st in states.items() if MLSpacedRepetitionEngine.is_due(st)]
     new_ids = [cid for cid, st in states.items() if st.get("total_reviews", 0) == 0]
 
     return jsonify({
@@ -754,7 +762,7 @@ def sr_train():
 
     try:
         validated_logs = orchestrator.security.validate_review_logs(raw_logs)
-        ml_sr_engine.train(validated_logs)
+        get_engine_for_user(user["uid"]).train(validated_logs)
         return jsonify({"success": True, "trained_samples": len(validated_logs)})
     except Exception as e:
         logger.exception("Fehler beim Modell-Training")

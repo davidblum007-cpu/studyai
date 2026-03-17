@@ -30,9 +30,20 @@ class Database:
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, 'conn') or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._local.conn = sqlite3.connect(
+                self.db_path,
+                check_same_thread=False,
+                timeout=30,          # Warte bis zu 30s auf Lock statt sofort zu werfen
+            )
+            # WAL: Multiple concurrent readers, one writer at a time
             self._local.conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn.execute("PRAGMA foreign_keys = ON")
+            # busy_timeout: Warte bei Write-Locks statt sofort SQLITE_BUSY zurückzugeben
+            self._local.conn.execute("PRAGMA busy_timeout = 30000")
+            # NORMAL ist schneller als FULL und überlebt fast alle Abstürze
+            self._local.conn.execute("PRAGMA synchronous = NORMAL")
+            # Automatischer WAL-Checkpoint alle 1000 Pages (verhindert unbegrenzt wachsende WAL-Datei)
+            self._local.conn.execute("PRAGMA wal_autocheckpoint = 1000")
             self._local.conn.row_factory = sqlite3.Row
         return self._local.conn
 
@@ -496,18 +507,68 @@ class Database:
     def export_all_user_data(self, user_id: str) -> dict:
         """
         GDPR Art. 20 – Portabilität: Alle User-Daten als strukturiertes Dict.
-        Enthält alle Sessions mit Analyse, Flashcards, SR-States und Lernplänen.
+        Enthält alle Sessions, Flashcards, SR-States, Lernpläne, Chat-History,
+        Badges, Shared-Deck-Tokens und Billing-Profil.
         """
-        sessions = self.list_sessions(user_id=user_id, limit=200)
-        export = {
+        conn = self._get_conn()
+        export: Dict[str, Any] = {
             "user_id":     user_id,
             "exported_at": datetime.now(timezone.utc).isoformat(),
+            "gdpr_note":   "Exported under GDPR Art. 20 – Right to Data Portability",
             "sessions":    [],
+            "chat_history": [],
+            "badges":       [],
+            "shared_decks": [],
+            "billing":      {},
         }
+
+        # Sessions + Flashcards + SR-States + Plans
+        sessions = self.list_sessions(user_id=user_id, limit=500)
         for s in sessions:
             full = self.load_session(s["id"], user_id=user_id)
             if full:
                 export["sessions"].append(full)
+
+        # Chat-History (alle Sessions)
+        rows = conn.execute("""
+            SELECT cm.session_id, cm.role, cm.content, cm.created_at
+            FROM   chat_messages cm
+            JOIN   sessions s ON cm.session_id = s.id
+            WHERE  cm.user_id = ?
+            ORDER  BY cm.created_at ASC
+        """, (user_id,)).fetchall()
+        export["chat_history"] = [dict(r) for r in rows]
+
+        # Badges
+        export["badges"] = self.get_user_badges(user_id)
+
+        # Shared-Deck-Tokens (ohne anderen User-Daten zu leaken)
+        rows = conn.execute("""
+            SELECT token, session_id, created_at, expires_at, view_count
+            FROM   shared_decks WHERE uid = ?
+        """, (user_id,)).fetchall()
+        export["shared_decks"] = [dict(r) for r in rows]
+
+        # Billing-Profil
+        row = conn.execute(
+            "SELECT tier, sub_status, sub_period_end, created_at FROM users WHERE uid = ?",
+            (user_id,)
+        ).fetchone()
+        if row:
+            export["billing"] = {
+                "tier":           row["tier"],
+                "sub_status":     row["sub_status"],
+                "sub_period_end": row["sub_period_end"],
+                "member_since":   row["created_at"],
+            }
+
+        # Streak + Statistiken
+        export["stats"] = {
+            "streak":        self.get_streak(user_id),
+            "total_reviews": self.get_total_reviews(user_id),
+            "total_cards":   self.get_total_cards(user_id),
+        }
+
         return export
 
     def purge_inactive_data(self, months: int = 24) -> int:

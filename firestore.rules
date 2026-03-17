@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// StudyAI Firestore Security Rules
+// Deploy: firebase deploy --only firestore:rules
+//
+// Principle of least privilege:
+//  - Users may only read/write their own documents
+//  - No public read/write
+//  - Admin writes only from backend (Firebase Admin SDK bypasses rules)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Deny everything by default ─────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ── Users: only own profile ────────────────────────────────────────────
+    match /users/{userId} {
+      allow read:  if request.auth != null && request.auth.uid == userId;
+      allow write: if false; // Only backend (Admin SDK) may write
+    }
+
+    // ── Sessions: only owner ───────────────────────────────────────────────
+    match /sessions/{sessionId} {
+      allow read, write: if request.auth != null
+                         && resource.data.uid == request.auth.uid;
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid;
+    }
+
+    // ── Flashcards: only owner via parent session ──────────────────────────
+    match /sessions/{sessionId}/flashcards/{cardId} {
+      allow read, write: if request.auth != null
+                         && get(/databases/$(database)/documents/sessions/$(sessionId)).data.uid
+                            == request.auth.uid;
+    }
+
+    // ── Shared decks: public read (token required at app level), no write ──
+    match /shared_decks/{token} {
+      allow read:  if true;   // Token acts as capability URL – read is intentional
+      allow write: if false;  // Only backend writes
+    }
+
+    // ── Everything else: deny ──────────────────────────────────────────────
+  }
+}
