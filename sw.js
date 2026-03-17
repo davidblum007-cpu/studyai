@@ -8,7 +8,7 @@
 
 "use strict";
 
-const CACHE_VERSION = "20260310"; // Wird bei Updates manuell oder per Build-Script erhöht
+const CACHE_VERSION = "20260317"; // Wird bei Updates manuell oder per Build-Script erhöht
 const STATIC_CACHE = `studyai-static-${CACHE_VERSION}`;
 const DATA_CACHE   = `studyai-data-${CACHE_VERSION}`;
 
