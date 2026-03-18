@@ -23,6 +23,7 @@ from typing import Dict, Any, List
 
 import numpy as np
 from sklearn.linear_model import SGDClassifier
+from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
 
@@ -56,20 +57,37 @@ def get_engine_for_user(uid: str) -> "MLSpacedRepetitionEngine":
     return _engine_cache[uid]
 
 
+# Mindestanzahl Trainingssamples bevor das ML-Modell genutzt wird
+MIN_TRAINING_SAMPLES = 20
+
+
 class MLSpacedRepetitionEngine:
     def __init__(self, uid: str = "global"):
         # uid="global" nur als Fallback – produktiv immer uid des eingeloggten Users
         self.uid  = uid
         self.name = f"MLSpacedRepetitionEngine[{uid[:8]}]"
         self._unsaved_samples = 0
-        self._model_path = _MODELS_DIR / f"sr_model_{uid}.pkl"
-        self.model = self._load_model()
+        self._model_path  = _MODELS_DIR / f"sr_model_{uid}.pkl"
+        self._scaler_path = _MODELS_DIR / f"sr_scaler_{uid}.pkl"
+        self.model, self.scaler = self._load_model()
         logger.info(f"[{self.name}] initialisiert (model_path={self._model_path})")
 
-    def _load_model(self) -> SGDClassifier:
+    def _load_model(self):
+        """Lädt Modell + Scaler aus Disk. Gibt (model, scaler) zurück."""
+        # Scaler laden oder neu erstellen
+        scaler = StandardScaler()
+        if self._scaler_path.exists():
+            try:
+                scaler = joblib.load(self._scaler_path)
+            except Exception as e:
+                logger.warning(f"[{self.name}] Scaler konnte nicht geladen werden, neu: {e}")
+                scaler = StandardScaler()
+
+        # Modell laden oder neu erstellen
         if self._model_path.exists():
             try:
-                return joblib.load(self._model_path)
+                model = joblib.load(self._model_path)
+                return model, scaler
             except Exception as e:
                 logger.warning(f"[{self.name}] Modell konnte nicht geladen werden, erstelle neues: {e}")
 
@@ -79,14 +97,17 @@ class MLSpacedRepetitionEngine:
         # Features: [reps, interval, last_rating, success_rate, log_interval]
         X_dummy = np.array([[0, 0, 0, 0.0, math.log1p(0)], [1, 2880, 2, 1.0, math.log1p(2880)]])
         y_dummy = np.array([0, 1])
-        model.partial_fit(X_dummy, y_dummy, classes=np.array([0, 1]))
-        return model
+        scaler.fit(X_dummy)
+        X_scaled = scaler.transform(X_dummy)
+        model.partial_fit(X_scaled, y_dummy, classes=np.array([0, 1]))
+        return model, scaler
 
     def _save_model(self):
         try:
             joblib.dump(self.model, self._model_path)
+            joblib.dump(self.scaler, self._scaler_path)
         except Exception as e:
-            logger.error(f"[{self.name}] Modell konnte nicht gespeichert werden: {e}")
+            logger.error(f"[{self.name}] Modell/Scaler konnte nicht gespeichert werden: {e}")
 
     @staticmethod
     def new_card_state(card_id: str) -> Dict[str, Any]:
@@ -123,8 +144,9 @@ class MLSpacedRepetitionEngine:
             X.append([reps, interv, last_r, success_rate_all, log_interval])
             y.append(target)
 
-        if len(X) < 2:
-            return  # Nicht genug Daten für Training
+        if len(X) < MIN_TRAINING_SAMPLES:
+            logger.info(f"[{self.name}] Zu wenig Trainingsdaten ({len(X)}/{MIN_TRAINING_SAMPLES}) – übersprungen")
+            return  # Nicht genug Daten für zuverlässiges Training
 
         # NaN/Inf check
         X_arr = np.array(X)
@@ -133,7 +155,10 @@ class MLSpacedRepetitionEngine:
             logger.warning("[ML_SR] Training-Daten enthalten NaN/Inf – übersprungen")
             return
 
-        self.model.partial_fit(X_arr, y_arr)
+        # Feature-Normalisierung: Scaler an neuen Daten anpassen + transformieren
+        X_scaled = self.scaler.fit_transform(X_arr)
+
+        self.model.partial_fit(X_scaled, y_arr)
         self._unsaved_samples += len(X)
         if self._unsaved_samples >= 10:
             self._save_model()
@@ -177,7 +202,9 @@ class MLSpacedRepetitionEngine:
                 success_rate_est = 1.0 if last_rating >= 2 else 0.0
                 log_interval = math.log1p(prev_interval)
                 features = np.array([[reps, prev_interval, last_rating, success_rate_est, log_interval]])
-                prob = self.model.predict_proba(features)[0][1] # Wahrscheinlichkeit für "erinnert"
+                # Feature-Normalisierung vor Predict (gleiche Skalierung wie beim Training)
+                features_scaled = self.scaler.transform(features)
+                prob = self.model.predict_proba(features_scaled)[0][1]  # Wahrscheinlichkeit für "erinnert"
                 
                 # ML-Anpassung: Wenn Wahrscheinlichkeit sehr hoch, Intervall stärker wachsen lassen
                 # Wenn niedrig, Intervall konservativer vergrößern

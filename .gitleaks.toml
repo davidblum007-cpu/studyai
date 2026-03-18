@@ -25,6 +25,30 @@ description = "Real Firebase Web API Key (AIzaSy + 35 chars)"
 regex       = '''AIzaSy[A-Za-z0-9_-]{33}'''
 tags        = ["key", "firebase"]
 
+[[rules]]
+id          = "stripe-live-key"
+description = "Stripe Live Secret Key"
+regex       = '''sk_live_[A-Za-z0-9]{24,}'''
+tags        = ["key", "stripe", "payment"]
+
+[[rules]]
+id          = "stripe-test-key"
+description = "Stripe Test Secret Key"
+regex       = '''sk_test_[A-Za-z0-9]{24,}'''
+tags        = ["key", "stripe"]
+
+[[rules]]
+id          = "stripe-webhook-secret"
+description = "Stripe Webhook Signing Secret"
+regex       = '''whsec_[A-Za-z0-9]{32,}'''
+tags        = ["key", "stripe"]
+
+[[rules]]
+id          = "sentry-dsn"
+description = "Sentry DSN"
+regex       = '''https://[0-9a-f]{32}@o[0-9]+\.ingest\.sentry\.io/[0-9]+'''
+tags        = ["dsn", "sentry"]
+
 [allowlist]
 description = "Ignore example/placeholder values"
 regexes     = [
@@ -33,9 +57,14 @@ regexes     = [
   '''YOUR_KEY''',
   '''EXAMPLE''',
   '''placeholder''',
+  '''sk_live_\.\.\.',
+  '''sk_test_\.\.\.',
+  '''whsec_\.\.\.',
+  '''REPLACE_WITH''',
 ]
 paths = [
   '''.env.example''',
   '''README''',
   '''docs/''',
+  '''firebase_credentials.json''',
 ]

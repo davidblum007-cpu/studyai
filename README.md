@@ -153,6 +153,33 @@ StudyAI/
 
 ---
 
+## Setup für Entwickler
+
+Nach dem Klonen des Repositories einmalig ausführen, um den Pre-commit-Hook für Secret-Detection zu aktivieren:
+
+```bash
+# Linux / macOS
+chmod +x .github/hooks/pre-commit
+git config core.hooksPath .github/hooks
+
+# Windows (PowerShell)
+git config core.hooksPath .github/hooks
+```
+
+Oder einfach das mitgelieferte Setup-Script verwenden:
+
+```bash
+# Linux / macOS
+bash setup.sh
+
+# Windows (PowerShell)
+git config core.hooksPath .github/hooks
+```
+
+Der Hook scannt vor jedem Commit automatisch nach hardcodierten Secrets (API-Keys, Passwörter etc.) via [gitleaks](https://github.com/gitleaks/gitleaks).
+
+---
+
 ## Sicherheitshinweise
 
 - Rate-Limiting auf allen Endpoints via flask-limiter

@@ -38,6 +38,15 @@ services:
       - STUDYAI_DB=/app/data/studyai.db
       # Redis URL for rate-limiting
       - REDIS_URL=redis://redis:6379/0
+      # Push Notifications (Phase 7 – VAPID)
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_CLAIMS_EMAIL=${VAPID_CLAIMS_EMAIL:-mailto:admin@studyai.app}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ----------------------------------------------------------
   # redis – in-memory store (rate-limiting, caching)
@@ -54,6 +63,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # ----------------------------------------------------------
   # nginx – reverse proxy, SSL termination, static caching
@@ -72,6 +86,45 @@ services:
       # - ./ssl/privkey.pem:/etc/nginx/ssl/privkey.pem:ro
     depends_on:
       - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------
+  # backup – tägliche SQLite + ML-Modelle Sicherung
+  # ----------------------------------------------------------
+  backup:
+    image: python:3.11-slim
+    container_name: studyai_backup
+    restart: unless-stopped
+    volumes:
+      # Gleiche Datenquelle wie web-Service
+      - ./data:/app/data:ro
+      # Zielverzeichnis für Backups (außerhalb des Containers)
+      - ./backups:/app/backups
+      # Backup-Script einbinden
+      - ./backup.sh:/app/backup.sh:ro
+    environment:
+      - STUDYAI_DB=/app/data/studyai.db
+      - BACKUP_DIR=/app/backups
+      - BACKUP_KEEP_DAYS=30
+    entrypoint: >
+      sh -c "apt-get update -qq && apt-get install -y -qq sqlite3 tar &&
+             chmod +x /app/backup.sh &&
+             echo 'Backup-Service gestartet. Erstes Backup in 24h.' &&
+             while true; do
+               sleep 86400 &&
+               /app/backup.sh;
+             done"
+    depends_on:
+      - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # ----------------------------------------------------------
 # named volumes
